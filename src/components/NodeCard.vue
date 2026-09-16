@@ -6,9 +6,10 @@ import PingChart from '@/components/PingChart.vue'
 import TrafficProgress from '@/components/TrafficProgress.vue'
 import { useGlassSurface } from '@/composables/useGlassSurface'
 import { useAppStore } from '@/stores/app'
+import { useNodesStore } from '@/stores/nodes'
 import { formatBytesPerSecondWithConfig, formatBytesWithConfig, formatDateTime, formatUptimeWithFormat, getStatus } from '@/utils/helper'
 import { getOSImage, getOSName } from '@/utils/osImageHelper'
-import { getRegionCode, getRegionDisplayName } from '@/utils/regionHelper'
+import { getFlagUrl, getRegionDisplayName } from '@/utils/regionHelper'
 import { formatPriceWithCycle, getDaysUntilExpired, getExpireStatus, getExpireStatusHexColor, parseTags } from '@/utils/tagHelper'
 
 const props = defineProps<{
@@ -92,15 +93,19 @@ const trafficUsed = computed(() => {
   }
 })
 
+const nodesStore = useNodesStore()
+
 // 计算节点的价格相关标签（剩余天数 + 价格）
+//
+// CFSM 语义：`price` 为 "0"/"-1" 表示免费，空白表示未设置；是否展示由后台
+// sysConfig 的 show_expire / show_price 控制，因此这里逐项判断后再 push。
 const priceTags = computed(() => {
   const tags: Array<{ text: string, color: string }> = []
   const lang = appStore.lang
   const node = props.node
 
-  // price > 0 时显示
-  if (node.price !== 0) {
-    // 剩余天数标签
+  // 剩余天数标签：仅在配置了到期时间且后台开启 show_expire 时展示
+  if (node.expired_at.trim() !== '' && nodesStore.sysConfig.show_expire === true) {
     const days = getDaysUntilExpired(node.expired_at)
     const status = getExpireStatus(node.expired_at)
     const color = getExpireStatusHexColor(status)
@@ -114,8 +119,10 @@ const priceTags = computed(() => {
     else {
       tags.push({ text: lang === 'zh-CN' ? `剩余 ${days} 天` : `${days} days left`, color })
     }
+  }
 
-    // 价格标签
+  // 价格标签：仅在配置了价格且后台开启 show_price 时展示
+  if (node.price_raw.trim() !== '' && nodesStore.sysConfig.show_price === true) {
     const priceText = formatPriceWithCycle(node.price, node.billing_cycle, node.currency, lang)
     tags.push({ text: priceText, color: themeVars.value.infoColor }) // purple
   }
@@ -170,7 +177,7 @@ function handleCardKeydown(event: KeyboardEvent): void {
       <template #header>
         <div class="flex gap-2 min-w-0 items-center">
           <NIcon class="shrink-0">
-            <img :src="`/flags/${getRegionCode(props.node.region)}.svg`" :alt="getRegionDisplayName(props.node.region)">
+            <img :src="getFlagUrl(props.node.region)" :alt="getRegionDisplayName(props.node.region)">
           </NIcon>
           <!-- 自定义标签显示在节点名前（仅当 tagsInSeparateRow 为 false 时） -->
           <div v-if="customTags.length > 0 && !appStore.tagsInSeparateRow" class="has-tags flex shrink-0 flex-wrap gap-1 items-center">

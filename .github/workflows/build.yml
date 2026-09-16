@@ -1,0 +1,50 @@
+name: Build Project
+
+on:
+  push:
+    branches:
+      - main  # 当 main 分支有代码推送时触发构建
+  pull_request:
+    branches:
+      - main  # 当有针对 main 分支的 PR 时触发构建
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 检出仓库代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. 安装 pnpm (顺应项目 README 要求的 v11 版本)
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      # 3. 设置 Node.js 环境 (使用项目要求的 v24 版本)
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'pnpm'
+
+      # 4. 安装依赖
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 5. 执行代码检查 (可选，对应您 README 中的 pnpm lint)
+      - name: Lint code
+        run: pnpm lint
+
+      # 6. 执行生产环境构建 (对应您 README 中的 pnpm build)
+      - name: Build static files
+        run: pnpm build
+
+      # 7. 保存构建产物 (将生成的 dist 目录打包保存，可在 GitHub 界面下载)
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-files
+          path: dist/

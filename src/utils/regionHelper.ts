@@ -1625,6 +1625,16 @@ export function getRegionCode(regionEmoji: string): string {
 }
 
 /**
+ * 获取 CFSM 默认皮肤的旗帜图片地址。
+ *
+ * CFSM 的旗帜文件使用**小写**地区码（如 `/flags/us.svg`），而 `region` 字段为
+ * 大写（如 `"US"`），因此这里统一转小写，避免拿到 SPA 的 HTML 回退页。
+ */
+export function getFlagUrl(region: string): string {
+  return `/flags/${getRegionCode(region).toLowerCase()}.svg`
+}
+
+/**
  * 根据地区代码获取emoji
  * @param code 地区代码（如：HK, CN, US）
  * @returns 地区emoji

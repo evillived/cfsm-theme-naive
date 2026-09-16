@@ -6,9 +6,10 @@ import PingChart from '@/components/PingChart.vue'
 import TrafficProgress from '@/components/TrafficProgress.vue'
 import { useGlassSurface } from '@/composables/useGlassSurface'
 import { useAppStore } from '@/stores/app'
+import { useNodesStore } from '@/stores/nodes'
 import { formatBytesPerSecondWithConfig, formatBytesWithConfig, formatDateTime, formatUptimeWithFormat, getStatus } from '@/utils/helper'
 import { getOSImage, getOSName } from '@/utils/osImageHelper'
-import { getRegionCode, getRegionDisplayName } from '@/utils/regionHelper'
+import { getFlagUrl, getRegionDisplayName } from '@/utils/regionHelper'
 import { formatPriceWithCycle, getDaysUntilExpired, getExpireStatus, parseTags } from '@/utils/tagHelper'
 
 const props = defineProps<{
@@ -189,10 +190,11 @@ const rowHeightStyle = computed(() => {
   return {}
 })
 
-// 计算国旗图标路径
+const nodesStore = useNodesStore()
+
+// 计算国旗图标路径（CFSM 的旗帜文件名使用小写地区码）
 function getFlagSrc(region: string): string {
-  const code = getRegionCode(region)
-  return `/flags/${code}.svg`
+  return getFlagUrl(region)
 }
 
 function handleClick(node: NodeData) {
@@ -278,13 +280,15 @@ function getExpireBadgeColor(status: string): string {
 }
 
 // 计算节点的标签列表（返回颜色）
+//
+// CFSM 语义：`price` 为 "0"/"-1" 表示免费、空白表示未设置；是否展示由后台
+// sysConfig 的 show_expire / show_price 控制。
 function getNodeTags(node: NodeData): Array<{ text: string, color: string }> {
   const tags: Array<{ text: string, color: string }> = []
   const lang = appStore.lang
 
-  // 前两个标签：剩余天数和价格（price > 0 时显示）
-  if (node.price !== 0) {
-    // 剩余天数标签
+  // 剩余天数标签：仅在配置了到期时间且后台开启 show_expire 时展示
+  if (node.expired_at.trim() !== '' && nodesStore.sysConfig.show_expire === true) {
     const days = getDaysUntilExpired(node.expired_at)
     const status = getExpireStatus(node.expired_at)
     const color = getExpireBadgeColor(status)
@@ -298,8 +302,10 @@ function getNodeTags(node: NodeData): Array<{ text: string, color: string }> {
     else {
       tags.push({ text: lang === 'zh-CN' ? `剩余 ${days} 天` : `${days} days left`, color })
     }
+  }
 
-    // 价格标签
+  // 价格标签：仅在配置了价格且后台开启 show_price 时展示
+  if (node.price_raw.trim() !== '' && nodesStore.sysConfig.show_price === true) {
     const priceText = formatPriceWithCycle(node.price, node.billing_cycle, node.currency, lang)
     tags.push({ text: priceText, color: '#0090FF' }) // 蓝色
   }

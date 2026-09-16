@@ -9,7 +9,7 @@ import { getSharedApi } from '@/utils/cfsmApi'
 import { formatBytesPerSecondWithConfig, formatBytesWithConfig, formatDateTime, formatUptimeWithFormat } from '@/utils/helper'
 import { subscribeAll, subscribeServer } from '@/utils/init'
 import { getOSImage, getOSName } from '@/utils/osImageHelper'
-import { getRegionCode, getRegionDisplayName } from '@/utils/regionHelper'
+import { getFlagUrl, getRegionDisplayName } from '@/utils/regionHelper'
 
 // 异步组件：按需加载图表，减少首屏体积
 const LoadChart = defineAsyncComponent(() => import('@/components/LoadChart.vue'))
@@ -138,7 +138,7 @@ const lightCardContrastEnabled = computed(() => appStore.lightCardContrast && !a
         </NButton>
         <div class="text-lg font-bold flex gap-2 items-center">
           <NIcon size="24">
-            <img :src="`/flags/${getRegionCode(data.region)}.svg`" :alt="getRegionDisplayName(data.region)">
+            <img :src="getFlagUrl(data.region)" :alt="getRegionDisplayName(data.region)">
           </NIcon>
           <NText>
             {{ data.name }}
