@@ -21,7 +21,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 12.4.2
 
       # 3. 设置 Node.js 环境 (使用项目要求的 v24 版本)
       - name: Set up Node.js
