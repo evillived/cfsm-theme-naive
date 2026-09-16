@@ -1,0 +1,86 @@
+<script setup lang="ts">
+import { NAvatar, NButton, NFlex, NH3, NPopover } from 'naive-ui'
+import { computed, inject, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { ADMIN_URL, useAppStore } from '@/stores/app'
+
+const router = useRouter()
+const appStore = useAppStore()
+
+// 从 Provider 注入滚动状态
+const isScrolled = inject<ReturnType<typeof ref<boolean>>>('isScrolled', ref(false))
+
+// 站点图标：作为模块资源引用，构建后输出到 assets/
+const siteFavicon = ref(new URL('../assets/favicon.ico', import.meta.url).href)
+
+// 计算页面容器的样式
+const containerStyle = computed(() => {
+  if (appStore.fullWidth) {
+    return {}
+  }
+  return {
+    maxWidth: appStore.maxPageWidth,
+    marginInline: 'auto',
+  }
+})
+
+const actionButtons = computed(() => {
+  const buttons = [
+    {
+      title: appStore.themeMode === 'auto' ? '自动主题' : appStore.themeMode === 'light' ? '浅色主题' : '深色主题',
+      icon: appStore.themeMode === 'auto' ? 'i-icon-park-outline-dark-mode' : appStore.themeMode === 'light' ? 'i-icon-park-outline-sun-one' : 'i-icon-park-outline-moon',
+      action: 'toggleTheme',
+      disabled: false,
+    },
+  ]
+
+  // 管理后台由内置默认主题接管；登录也在后台完成，主题不实现登录页
+  if (appStore.showAdminEntry) {
+    buttons.push({
+      title: '管理后台',
+      icon: 'i-icon-park-outline-setting',
+      action: 'openAdmin',
+      disabled: false,
+    })
+  }
+
+  return buttons
+})
+
+function handleButtonClick(action: string) {
+  switch (action) {
+    case 'toggleTheme':
+      appStore.updateThemeMode()
+      break
+    case 'openAdmin':
+      // 管理后台固定由默认主题接管，第三方主题只能跳转
+      location.href = ADMIN_URL
+      break
+  }
+}
+</script>
+
+<template>
+  <div class="transition-all duration-200 top-0 position-sticky z-10" :class="isScrolled ? 'bg-$n-color shadow-sm backdrop-blur-md' : 'bg-transparent'">
+    <div class="px-4 flex-between h-16" :style="containerStyle">
+      <NFlex class="flex-center cursor-pointer" @click="router.push('/')">
+        <NAvatar :src="siteFavicon" :fallback-src="`${siteFavicon}?avatar`" round />
+        <NH3 class="m-0">
+          {{ appStore.siteTitle }}
+        </NH3>
+      </NFlex>
+      <NFlex class="flex gap-4">
+        <NPopover v-for="button in actionButtons" :key="button.action" :disabled="button.disabled">
+          <template #trigger>
+            <NButton :disabled="button.disabled" class="p-2 h-8 w-8" text @click="handleButtonClick(button.action)">
+              <div :class="button.icon" />
+            </NButton>
+          </template>
+          <template #default>
+            {{ button.title }}
+          </template>
+        </NPopover>
+      </NFlex>
+    </div>
+  </div>
+</template>
