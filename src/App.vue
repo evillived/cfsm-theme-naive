@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, watch } from 'vue'
 import Background from '@/components/Background.vue'
 import Footer from '@/components/Footer.vue'
 import Header from '@/components/Header.vue'
 import LoadingCover from '@/components/LoadingCover.vue'
 import Provider from '@/components/Provider.vue'
 import { useAppStore } from '@/stores/app'
-import { destroyInitManager, initApp } from '@/utils/init'
+import { listenStorageSync, useThemeSettingsStore } from '@/stores/themeSettings'
+import { applyRealtimeSetting, destroyInitManager, initApp } from '@/utils/init'
 
 const appStore = useAppStore()
+const themeSettingsStore = useThemeSettingsStore()
 
 // 计算页面容器的样式
 const pageContainerStyle = computed(() => {
@@ -21,8 +23,23 @@ const pageContainerStyle = computed(() => {
   }
 })
 
+// 「启用实时推送」设置变化时立即生效，无需刷新页面
+watch(
+  () => appStore.enableRealtime,
+  (enabled) => {
+    applyRealtimeSetting(enabled)
+  },
+)
+
+// 其它标签页改动主题设置时，同步到本页
+let stopStorageSync: (() => void) | null = null
+
 // 初始化应用
 onMounted(async () => {
+  stopStorageSync = listenStorageSync(() => {
+    themeSettingsStore.reloadFromStorage()
+  })
+
   try {
     await initApp()
   }
@@ -33,6 +50,8 @@ onMounted(async () => {
 
 // 组件卸载时销毁 InitManager，防止内存泄漏
 onUnmounted(() => {
+  stopStorageSync?.()
+  stopStorageSync = null
   destroyInitManager()
 })
 </script>

@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import type { LatencyWindowPoint } from '@/types/cfsm'
+import type { LatencyValue } from '@/stores/nodes'
+import type { HistoryHours, HistoryMetricRow } from '@/types/cfsm'
 import dayjs from 'dayjs'
 import { NButton, NEmpty, NSpin, NSwitch, NTooltip, useThemeVars } from 'naive-ui'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, shallowRef, watch } from 'vue'
 import VChart from 'vue-echarts'
 import { useGlassSurface } from '@/composables/useGlassSurface'
 import { useAppStore } from '@/stores/app'
 import { useNodesStore } from '@/stores/nodes'
+import { getSharedApi } from '@/utils/cfsmApi'
+import { formatLatencyValue, formatLossValue, formatSampleInterval, latencyHex, pickServerLineValue } from '@/utils/latencyHelper'
 import { cutPeakValues, interpolateNullsLinear } from '@/utils/recordHelper'
 import '@/utils/echarts' // 共享 ECharts 配置
 
@@ -17,9 +20,16 @@ const props = defineProps<{
 
 const appStore = useAppStore()
 const nodesStore = useNodesStore()
+const api = getSharedApi()
 const { glassSurfaceStyle, isGlassEnabled } = useGlassSurface()
 const themeVars = useThemeVars()
 const isDark = computed(() => appStore.isDark)
+
+const nodeInfo = computed(() => nodesStore.findById(props.uuid))
+
+function resolveApiBase(): string {
+  return nodeInfo.value?.apiBase ?? api.apiBases[0] ?? window.location.origin
+}
 
 // 图表主题相关颜色
 const chartThemeColors = computed(() => ({
@@ -45,71 +55,24 @@ const chartColors = [
   '#FB923C', // 橙色
 ]
 
-// CFSM 没有延迟历史接口：仅 /api/servers 返回近 latency_window.hours 小时的窗口数据
-const maxPingRecordPreserveTime = computed(() => appStore.latencyWindow.hours || 2)
-
-// 视图选项
-const presetViews = [
+/**
+ * 时间范围四档。CFSM 的 `/api/history/all` 只接受固定枚举的 hours，
+ * 1 / 6 / 12 / 24 均在其中（> 24 未登录会 401，故不提供更长档位）。
+ */
+const PING_RANGES: Array<{ label: string, hours: HistoryHours }> = [
   { label: '1 小时', hours: 1 },
   { label: '6 小时', hours: 6 },
   { label: '12 小时', hours: 12 },
-  { label: '1 天', hours: 24 },
+  { label: '24 小时', hours: 24 },
 ]
 
-// 可用视图列表
-const availableViews = computed(() => {
-  const views: { label: string, hours: number }[] = []
-  const maxHours = maxPingRecordPreserveTime.value
-
-  for (const v of presetViews) {
-    if (maxHours >= v.hours) {
-      views.push(v)
-    }
-  }
-
-  const maxPreset = presetViews[presetViews.length - 1]
-  if (maxPreset && maxHours > maxPreset.hours) {
-    const label = maxHours % 24 === 0
-      ? `${Math.floor(maxHours / 24)} 天`
-      : `${maxHours} 小时`
-    views.push({ label, hours: maxHours })
-  }
-  else if (maxHours > 1 && !presetViews.some(v => v.hours === maxHours)) {
-    const label = maxHours % 24 === 0
-      ? `${Math.floor(maxHours / 24)} 天`
-      : `${maxHours} 小时`
-    views.push({ label, hours: maxHours })
-  }
-
-  return views
-})
-
-// 当前选中的视图
-const selectedView = ref<string>('')
-const selectedHours = computed(() => {
-  const view = availableViews.value.find(v => v.label === selectedView.value)
-  return view?.hours || 1
-})
-
-// 初始化默认视图
-watch(availableViews, (views) => {
-  const firstView = views[0]
-  if (firstView && !selectedView.value) {
-    selectedView.value = firstView.label
-  }
-}, { immediate: true })
+/** 当前选中的时间范围（小时）；默认 6 小时 */
+const selectedHours = ref<HistoryHours>(6)
 
 /**
- * CFSM 的延迟窗口点只包含三网取值（ct / cu / cm / bd）。
- * 这里保留 PingRecord / PingTaskSummary 的形状，以复用下方既有的合并与渲染逻辑。
+ * CFSM 历史行同样携带 `ping_ct/cu/cm/bd` 与 `loss_ct/cu/cm/bd`，
+ * 因此延迟曲线可以直接取真实历史（1/6/12/24 小时），不再受延迟窗口 ~20 点限制。
  */
-interface PingRecord {
-  client: string
-  task_id: number
-  time: string
-  value: number
-}
-
 interface PingTaskSummary {
   id: number
   name: string
@@ -121,6 +84,10 @@ interface PingTaskSummary {
   max?: number
   avg?: number
   loss?: number
+  /** 丢包率是否来自 CFSM 的 loss_* 实测值；false 表示由超时点占比估算 */
+  lossMeasured?: boolean
+  /** 窗口内的探测超时次数 */
+  timeoutCount?: number
   total?: number
 }
 
@@ -129,12 +96,15 @@ interface PingTaskSummary {
 // CFSM 没有延迟历史接口：数据来自 /api/servers 返回的近 latency_window.hours 小时窗口，
 // 每个窗口点包含 ct / cu / cm / bd 取值，最多 latency_window.points 个真实样本。
 
-const windowPoints = computed<LatencyWindowPoint[]>(() => {
-  const node = nodesStore.findById(props.uuid)
-  return node?.ping_window ?? []
-})
+// ==================== 数据源 ====================
+//
+// 参考文献实现：`/api/history/all` 的历史行本身就带全部线路（三网 + BGP + 自定义节点 1-4）的延迟与丢包列
+// （`ping_ct/cu/cm/bd`、`loss_ct/cu/cm/bd`），所以这里直接按选中的小时数取真实历史，
+// 无需依赖 `/api/servers` 的 ~20 点延迟窗口。
 
-/** 三网任务定义；显示名取站点配置的 custom_*_name */
+const remoteRows = shallowRef<HistoryMetricRow[]>([])
+
+/** 全部 8 条线路的任务定义；显示名取站点配置的 custom_*_name 与 node_*_name */
 const taskDefs = computed(() => {
   const config = appStore.siteConfig
   return [
@@ -142,128 +112,144 @@ const taskDefs = computed(() => {
     { id: 1, name: config?.custom_cu_name || 'CU' },
     { id: 2, name: config?.custom_cm_name || 'CM' },
     { id: 3, name: config?.custom_bd_name || 'BGP' },
+    { id: 4, name: config?.node_1_name || 'Node 1' },
+    { id: 5, name: config?.node_2_name || 'Node 2' },
+    { id: 6, name: config?.node_3_name || 'Node 3' },
+    { id: 7, name: config?.node_4_name || 'Node 4' },
   ]
 })
 
-/** 取值约定：false 视为未取样（跳过），null 视为探测超时（记为 -1） */
-function pickPoint(point: LatencyWindowPoint, taskId: number): number | null | false {
-  switch (taskId) {
-    case 0:
-      return point.ct ?? false
-    case 1:
-      return point.cu ?? false
-    case 2:
-      return point.cm ?? false
-    case 3:
-      return point.bd ?? false
-    default:
-      return false
-  }
-}
+/**
+ * 历史采样间隔（秒）：取相邻行时间差的中位数。
+ * 服务端按 `long_history_points` 在所选区间内抽样，间隔随档位变化，故由数据实测得出。
+ */
+const samplingIntervalSec = computed<number>(() => {
+  const rows = remoteRows.value
+  if (rows.length < 2)
+    return 0
 
-const tasks = computed<PingTaskSummary[]>(() => {
-  const points = windowPoints.value
-  return taskDefs.value
-    .filter(def => points.some(point => typeof pickPoint(point, def.id) === 'number'))
-    .map(def => ({ id: def.id, name: def.name, type: 'ping', interval: 0, default_on: true }))
+  const gaps: number[] = []
+  for (let i = 1; i < rows.length; i++) {
+    const prev = rows[i - 1]
+    const current = rows[i]
+    if (!prev || !current)
+      continue
+    const gap = current.timestamp - prev.timestamp
+    if (gap > 0)
+      gaps.push(gap)
+  }
+  if (gaps.length === 0)
+    return 0
+
+  gaps.sort((a, b) => a - b)
+  const median = gaps[Math.floor(gaps.length / 2)] ?? 0
+  return Math.round(median / 1000)
 })
 
-const remoteData = computed<PingRecord[]>(() => {
-  const records: PingRecord[] = []
-  for (const point of windowPoints.value) {
-    const time = new Date(point.ts).toISOString()
+const tasks = computed<PingTaskSummary[]>(() => {
+  const rows = remoteRows.value
+  return taskDefs.value
+    // 只要线路被配置过就保留：全程探测超时的线路同样需要展示，不能被过滤掉
+    .filter(def => rows.some(row =>
+      pickServerLineValue(row, 'ping', def.id) !== false
+      || pickServerLineValue(row, 'loss', def.id) !== false,
+    ))
+    .map(def => ({
+      id: def.id,
+      name: def.name,
+      type: 'ping',
+      // CFSM 不提供任务级间隔配置，由历史行实测得出
+      interval: samplingIntervalSec.value,
+      default_on: true,
+    }))
+})
+
+/**
+ * 探测超时的位置（`行下标:线路id`）。
+ * 每个历史行就是一个图表点，因此下标与 `mergedData` 严格对齐。
+ */
+const timeoutCells = computed(() => {
+  const cells = new Set<string>()
+  remoteRows.value.forEach((row, rowIndex) => {
     for (const def of taskDefs.value) {
-      const value = pickPoint(point, def.id)
-      if (value === false)
-        continue
-      records.push({ client: '', task_id: def.id, time, value: value === null ? -1 : value })
+      if (pickServerLineValue(row, 'ping', def.id) === null)
+        cells.add(`${rowIndex}:${def.id}`)
     }
-  }
-  return records.sort((a, b) => dayjs(a.time).valueOf() - dayjs(b.time).valueOf())
+  })
+  return cells
 })
 
 const loading = ref(false)
 const error = ref<string | null>(null)
+let latestRequestId = 0
+
+async function fetchRecords() {
+  if (!props.uuid)
+    return
+
+  const requestId = ++latestRequestId
+  loading.value = true
+  error.value = null
+
+  try {
+    const rows = await api.getHistory(resolveApiBase(), props.uuid, selectedHours.value)
+    if (requestId !== latestRequestId)
+      return
+    remoteRows.value = [...rows].sort((a, b) => a.timestamp - b.timestamp)
+  }
+  catch (err) {
+    if (requestId !== latestRequestId)
+      return
+    error.value = err instanceof Error ? err.message : '获取数据失败'
+    remoteRows.value = []
+  }
+  finally {
+    if (requestId === latestRequestId)
+      loading.value = false
+  }
+}
 
 // 任务选择
 const selectedTaskIds = ref<number[]>([])
 const cutPeak = ref(false)
+/** 首次拿到任务列表后才自动全选，避免用户「全不选」后被重新选中 */
+const selectionInitialized = ref(false)
 
 const isModal = computed(() => props.displayMode === 'modal')
 
-// 任务列表就绪后默认全选
+// 任务列表就绪后默认全选；换档位后剔除已不存在的线路
 watch(tasks, (list) => {
-  if (list.length > 0 && selectedTaskIds.value.length === 0)
-    selectedTaskIds.value = list.map(task => task.id)
+  const ids = list.map(task => task.id)
+  if (!selectionInitialized.value) {
+    if (ids.length > 0) {
+      selectedTaskIds.value = ids
+      selectionInitialized.value = true
+    }
+    return
+  }
+  const kept = selectedTaskIds.value.filter(id => ids.includes(id))
+  if (kept.length !== selectedTaskIds.value.length)
+    selectedTaskIds.value = kept
 }, { immediate: true })
 
 // ==================== 数据处理 ====================
 
+/**
+ * 历史行本身已按时间对齐，一行即一个图表点，无需再做按任务分桶的时间归并。
+ * 未配置的线路在该点直接不写键（图表留空），超时写 null。
+ */
 const mergedData = computed(() => {
-  const data = remoteData.value
-  if (!data.length)
-    return []
-
-  const taskList = tasks.value
-
-  const taskIntervals = taskList
-    .map(t => t.interval)
-    .filter((v): v is number => typeof v === 'number' && v > 0)
-
-  const fallbackIntervalSec = taskIntervals.length ? Math.min(...taskIntervals) : 60
-  const toleranceMs = Math.min(
-    6000,
-    Math.max(800, Math.floor(fallbackIntervalSec * 1000 * 0.25)),
-  )
-
-  const grouped: Map<number, Record<string, unknown>> = new Map()
-  const anchors: number[] = []
-
-  for (const rec of data) {
-    const ts = dayjs(rec.time).valueOf()
-    let anchor: number | null = null
-
-    for (const a of anchors) {
-      if (Math.abs(a - ts) <= toleranceMs) {
-        anchor = a
-        break
-      }
+  const defs = taskDefs.value
+  return remoteRows.value.map((row) => {
+    const point: Record<string, unknown> = { time: new Date(row.timestamp).toISOString() }
+    for (const def of defs) {
+      const latency = pickServerLineValue(row, 'ping', def.id)
+      if (latency === false)
+        continue
+      point[def.id] = typeof latency === 'number' ? latency : null
     }
-
-    const useTs = anchor ?? ts
-    if (!grouped.has(useTs)) {
-      grouped.set(useTs, { time: dayjs(useTs).toISOString() })
-      if (anchor === null) {
-        anchors.push(useTs)
-      }
-    }
-
-    const group = grouped.get(useTs)!
-    group[rec.task_id] = rec.value < 0 ? null : rec.value
-  }
-
-  const merged = Array.from(grouped.values()).sort(
-    (a, b) => dayjs(a.time as string).valueOf() - dayjs(b.time as string).valueOf(),
-  )
-
-  const hours = selectedHours.value
-  const lastItem = merged[merged.length - 1]
-  const lastTs = lastItem ? dayjs(lastItem.time as string).valueOf() : dayjs().valueOf()
-  const fromTs = lastTs - hours * 3600_000
-
-  let startIdx = 0
-  for (let i = 0; i < merged.length; i++) {
-    const item = merged[i]
-    if (!item)
-      continue
-    const ts = dayjs(item.time as string).valueOf()
-    if (ts >= fromTs) {
-      startIdx = Math.max(0, i - 1)
-      break
-    }
-  }
-
-  return merged.slice(startIdx)
+    return point
+  })
 })
 
 const chartData = computed(() => {
@@ -273,17 +259,35 @@ const chartData = computed(() => {
   if (selectedKeys.length === 0)
     return []
 
-  if (cutPeak.value) {
-    data = cutPeakValues(data, selectedKeys)
-  }
+  // 探测超时（null）是真实告警，不是「缺数据」。
+  // EWMA 裁剪与线性插值都会把 null 填成看似正常的延迟值，因此每轮变换后都要还原，
+  // 保证超时在图上始终是可见的断点。超时位置由 timeoutCells 按「行下标:线路id」给出。
+  const cells = timeoutCells.value
 
-  if (selectedKeys.length > 0 && data.length > 0) {
-    data = interpolateNullsLinear(data, selectedKeys, {
-      maxGapMultiplier: 6,
-      minCapMs: 2 * 60_000,
-      maxCapMs: 30 * 60_000,
+  const restoreTimeouts = (rows: typeof data): typeof data => {
+    if (cells.size === 0)
+      return rows
+    return rows.map((row, rowIndex) => {
+      let patched: Record<string, unknown> | null = null
+      for (const key of selectedKeys) {
+        if (cells.has(`${rowIndex}:${key}`)) {
+          patched ??= { ...row }
+          patched[key] = null
+        }
+      }
+      return (patched ?? row) as Record<string, unknown>
     })
   }
+
+  if (cutPeak.value) {
+    data = restoreTimeouts(cutPeakValues(data, selectedKeys))
+  }
+
+  data = restoreTimeouts(interpolateNullsLinear(data, selectedKeys, {
+    maxGapMultiplier: 6,
+    minCapMs: 2 * 60_000,
+    maxCapMs: 30 * 60_000,
+  }))
 
   return data
 })
@@ -324,38 +328,65 @@ function percentile(values: number[], value: number): number | undefined {
   return values[index]
 }
 
-// 最新值统计（从服务端 tasks 获取，保持颜色顺序）
+// 区间统计（基于所选档位的真实历史行，保持颜色顺序）
 const latestValues = computed(() => {
+  const rows = remoteRows.value
   if (!tasks.value.length)
     return []
 
   return tasks.value.map((task, idx) => {
-    const records = remoteData.value.filter(record => record.task_id === task.id)
-    const values = records
-      .filter(record => record.value >= 0)
-      .map(record => record.value)
+    // 该线路在区间内的逐行样本，保留原始三态：false 未配置 / null 探测超时 / number 有效值
+    const samples: Array<{ latency: LatencyValue, loss: LatencyValue }> = []
+    for (const row of rows) {
+      const latency = pickServerLineValue(row, 'ping', task.id)
+      const loss = pickServerLineValue(row, 'loss', task.id)
+      if (latency === false && loss === false)
+        continue
+      samples.push({ latency, loss })
+    }
+
+    const values = samples
+      .map(sample => sample.latency)
+      .filter((value): value is number => typeof value === 'number')
       .sort((a, b) => a - b)
+
     let latestValue: number | null = null
-    for (let i = records.length - 1; i >= 0; i--) {
-      const record = records[i]
-      if (record && record.value >= 0) {
-        latestValue = record.value
+    for (let i = samples.length - 1; i >= 0; i--) {
+      const sample = samples[i]
+      if (sample && typeof sample.latency === 'number') {
+        latestValue = sample.latency
         break
       }
     }
+
+    // 只有明确超时（null）才计入超时次数；未配置（false）不算
+    const timeoutCount = samples.filter(sample => sample.latency === null).length
     const p50 = percentile(values, 0.5)
     const p99 = percentile(values, 0.99)
     const safeIdx = Math.max(0, idx % chartColors.length)
+
+    // 丢包率取 CFSM 实测的 loss_* 区间均值；
+    // 后端未提供丢包列时才退回「超时行占比」这一近似口径。
+    const measured = samples
+      .map(sample => sample.loss)
+      .filter((value): value is number => typeof value === 'number')
+    const loss = measured.length > 0
+      ? measured.reduce((sum, value) => sum + value, 0) / measured.length
+      : (samples.length > 0 ? (timeoutCount / samples.length) * 100 : 0)
+
     return {
       ...task,
-      min: task.min ?? values[0],
-      max: task.max ?? values.at(-1),
-      avg: task.avg ?? (values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined),
+      min: values[0],
+      max: values.at(-1),
+      avg: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined,
       latest: latestValue ?? undefined,
       p50,
       p99,
       p99_p50_ratio: p50 && p99 ? p99 / p50 : undefined,
-      loss: task.loss ?? (records.length ? records.filter(record => record.value < 0).length / records.length * 100 : 0),
+      loss,
+      lossMeasured: measured.length > 0,
+      timeoutCount,
+      total: samples.length,
       latestValue,
       color: chartColors[safeIdx]!,
     }
@@ -464,32 +495,51 @@ const pingChartOption = computed(() => {
     tooltip: {
       ...baseTooltipConfig.value,
       formatter: (params: unknown) => {
-        const p = params as Array<{ seriesName: string, value: number | null, dataIndex: number }>
-        if (!p.length)
-          return ''
+        const p = params as Array<{ dataIndex: number }>
         const firstParam = p[0]
         if (!firstParam)
           return ''
-        const rowData = data[firstParam.dataIndex]
-        if (!rowData)
+        const rowIndex = firstParam.dataIndex
+        const row = data[rowIndex]
+        if (!row)
           return ''
+        const rawRow = mergedData.value[rowIndex]
 
-        const time = rowData.time as string
-        const timeStr = formatTimeForTooltip(time, hours)
+        const timeStr = formatTimeForTooltip(row.time as string, hours)
         let html = `<div style="font-weight:600;margin-bottom:6px;color:${chartThemeColors.value.textSecondary}">${timeStr}</div>`
         html += '<div style="display:flex;flex-direction:column;gap:4px">'
 
-        // 按延迟值排序显示
-        const sortedParams = [...p].sort((a, b) => (a.value ?? 0) - (b.value ?? 0))
-
-        for (const item of sortedParams) {
-          if (item.value !== null && item.value !== undefined) {
-            // 通过任务名找到对应的任务ID，再获取颜色
-            const task = tasks.value.find(t => t.name === item.seriesName)
-            const color = task ? colorMap.get(task.id) || chartColors[0] : chartColors[0]
-            const colorDot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:8px;flex-shrink:0"></span>`
-            html += `<div style="display:flex;align-items:center">${colorDot}<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.seriesName}</span><span style="margin-left:auto;font-weight:600;margin-left:16px;font-variant-numeric:tabular-nums">${Math.round(item.value)} ms</span></div>`
+        // 直接遍历已选任务：既不依赖 ECharts 是否把 null 点透传进 params，
+        // 也能把「探测超时」显式展示出来而不是静默跳过。
+        const entries = taskList.map((task) => {
+          const isTimeout = rawRow != null && rawRow[task.id] === null
+          const raw = row[task.id]
+          return {
+            name: task.name,
+            color: colorMap.get(task.id) || chartColors[0],
+            isTimeout,
+            value: (isTimeout ? null : typeof raw === 'number' ? raw : null) as number | null,
           }
+        })
+
+        // 超时排在最后，其余按延迟升序
+        entries.sort((a, b) => {
+          if (a.value === null && b.value === null)
+            return 0
+          if (a.value === null)
+            return 1
+          if (b.value === null)
+            return -1
+          return a.value - b.value
+        })
+
+        for (const entry of entries) {
+          // 该时刻既无采样也未超时（例如线路中途才上报）则跳过
+          if (entry.value === null && !entry.isTimeout)
+            continue
+          const colorDot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${entry.color};margin-right:8px;flex-shrink:0"></span>`
+          const valueHtml = `<span style="margin-left:auto;font-weight:600;margin-left:16px;font-variant-numeric:tabular-nums;color:${latencyHex(entry.value)}">${formatLatencyValue(entry.value)}</span>`
+          html += `<div style="display:flex;align-items:center">${colorDot}<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${entry.name}</span>${valueHtml}</div>`
         }
         html += '</div>'
         return html
@@ -550,20 +600,19 @@ const pingChartOption = computed(() => {
 
 // ==================== 生命周期 ====================
 
-// 数据源为 store 中的延迟窗口，切换视图/节点时只需重置选中项
-watch(selectedView, () => {
-  selectedTaskIds.value = []
+// 切换时间范围或节点时重新拉取历史
+watch(selectedHours, () => {
+  void fetchRecords()
 })
 
 watch(() => props.uuid, () => {
+  selectionInitialized.value = false
   selectedTaskIds.value = []
+  void fetchRecords()
 })
 
 onMounted(() => {
-  const firstView = availableViews.value[0]
-  if (firstView && !selectedView.value) {
-    selectedView.value = firstView.label
-  }
+  void fetchRecords()
 })
 </script>
 
@@ -578,21 +627,17 @@ onMounted(() => {
       '--ping-surface-hover': themeVars.hoverColor,
     }"
   >
-    <div class="ping-toolbar">
-      <div class="text-sm font-semibold">
-        延迟监控
-      </div>
-      <div class="ping-toolbar__views flex flex-wrap gap-1.5">
-        <NButton
-          v-for="view in availableViews"
-          :key="view.label"
-          :type="selectedView === view.label ? 'primary' : 'default'"
-          size="small"
-          @click="selectedView = view.label"
-        >
-          {{ view.label }}
-        </NButton>
-      </div>
+    <!-- 时间选择器（样式与负载图表保持一致：居中、无标题） -->
+    <div class="flex flex-wrap gap-2 justify-center">
+      <NButton
+        v-for="range in PING_RANGES"
+        :key="range.hours"
+        :type="selectedHours === range.hours ? 'primary' : 'default'"
+        size="small"
+        @click="selectedHours = range.hours"
+      >
+        {{ range.label }}
+      </NButton>
     </div>
 
     <!-- 内容区域 -->
@@ -601,7 +646,7 @@ onMounted(() => {
         {{ error }}
       </div>
       <div v-else-if="tasks.length === 0 && !loading" class="py-8">
-        <NEmpty description="暂无延迟数据" />
+        <NEmpty :description="`${PING_RANGES.find(r => r.hours === selectedHours)?.label ?? ''}内暂无延迟数据`" />
       </div>
 
       <template v-else>
@@ -662,25 +707,50 @@ onMounted(() => {
                       <span style="color: var(--n-text-color-3)">波动率</span>
                       <span class="font-medium" :style="{ fontFamily: appStore.numberFontFamily }">{{ task.p99_p50_ratio.toFixed(2) }}</span>
                     </template>
-                    <template v-if="task.interval !== undefined">
-                      <span style="color: var(--n-text-color-3)">间隔</span>
-                      <span class="font-medium" :style="{ fontFamily: appStore.numberFontFamily }">{{ task.interval }}s</span>
+                    <template v-if="formatSampleInterval(task.interval)">
+                      <span style="color: var(--n-text-color-3)">采样间隔</span>
+                      <span class="font-medium" :style="{ fontFamily: appStore.numberFontFamily }">{{ formatSampleInterval(task.interval) }}</span>
+                    </template>
+                    <template v-if="task.total !== undefined">
+                      <span style="color: var(--n-text-color-3)">样本数</span>
+                      <span class="font-medium" :style="{ fontFamily: appStore.numberFontFamily }">{{ task.total }}</span>
+                    </template>
+                    <template v-if="task.timeoutCount !== undefined && task.timeoutCount > 0">
+                      <span style="color: var(--n-text-color-3)">探测超时</span>
+                      <span class="font-medium" :style="{ fontFamily: appStore.numberFontFamily, color: latencyHex(null) }">{{ task.timeoutCount }} 次</span>
                     </template>
                     <template v-if="task.type">
                       <span style="color: var(--n-text-color-3)">类型</span>
                       <span class="font-medium" :style="{ fontFamily: appStore.numberFontFamily }">{{ task.type.toUpperCase() }}</span>
                     </template>
-                    <template v-if="task.total !== undefined">
-                      <span style="color: var(--n-text-color-3)">总数</span>
-                      <span class="font-medium" :style="{ fontFamily: appStore.numberFontFamily }">{{ task.total }}</span>
-                    </template>
                   </div>
                 </NTooltip>
               </div>
+              <!--
+                数字配色与 komari-theme-naive 对齐：延迟用主文本色，丢包/波动继承浅文本色，
+                不按分级着色。卡片在启用自定义背景时会套一层毛玻璃（背景色透过来），
+                再叠绿/橙分级色会与背景撞色、可读性变差。
+              -->
               <div class="ping-task-card__metrics text-sm mt-1 flex gap-3 items-center" style="color: var(--n-text-color-3)">
-                <span class="font-medium" :style="{ fontFamily: appStore.numberFontFamily, color: 'var(--n-text-color-1)' }">{{ task.latestValue !== null ? `${Math.round(task.latestValue)} ms` : '-' }}</span>
-                <span class="opacity-60">•</span>
-                <span :style="{ fontFamily: appStore.numberFontFamily }">{{ task.loss.toFixed(1) }}% 丢包</span>
+                <span
+                  class="font-medium"
+                  :style="{
+                    fontFamily: appStore.numberFontFamily,
+                    color: 'var(--n-text-color-1)',
+                  }"
+                >
+                  {{ task.latestValue !== null ? formatLatencyValue(task.latestValue) : '-' }}
+                </span>
+                <template v-if="task.lossMeasured || (task.timeoutCount ?? 0) > 0">
+                  <span class="opacity-60">•</span>
+                  <span :style="{ fontFamily: appStore.numberFontFamily }">
+                    {{ formatLossValue(task.loss) }} 丢包{{ task.lossMeasured ? '' : '(估)' }}
+                  </span>
+                </template>
+                <template v-if="(task.timeoutCount ?? 0) > 0">
+                  <span class="opacity-60">•</span>
+                  <span :style="{ fontFamily: appStore.numberFontFamily, color: latencyHex(null) }">{{ task.timeoutCount }} 次超时</span>
+                </template>
                 <template v-if="task.p99_p50_ratio !== undefined">
                   <span class="opacity-60">•</span>
                   <span :style="{ fontFamily: appStore.numberFontFamily }" title="波动率 p99/p50">{{ task.p99_p50_ratio.toFixed(1) }} 波动</span>
@@ -728,28 +798,11 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.ping-chart {
-  --ping-control-height: 32px;
-}
-
-.ping-toolbar,
 .ping-actions,
 .ping-trend-panel {
   border: 1px solid var(--ping-border);
   border-radius: var(--ping-radius);
   background: color-mix(in srgb, var(--ping-surface) 96%, var(--ping-surface-hover));
-}
-
-.ping-toolbar {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-}
-
-.ping-toolbar__views :deep(.n-button) {
-  min-height: var(--ping-control-height);
 }
 
 .ping-task-grid {
@@ -836,28 +889,10 @@ onMounted(() => {
 }
 
 @media (max-width: 640px) {
-  .ping-toolbar {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .ping-toolbar__views {
-    width: 100%;
-  }
-
   .ping-task-grid,
   .ping-chart--page .ping-task-grid,
   .ping-chart--modal .ping-task-grid {
     grid-template-columns: 1fr;
-  }
-
-  .ping-toolbar__views {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .ping-toolbar__views :deep(.n-button) {
-    width: 100%;
   }
 
   .ping-actions {

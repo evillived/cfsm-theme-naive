@@ -10,7 +10,7 @@ import { useGlassSurface } from '@/composables/useGlassSurface'
 import { useAppStore } from '@/stores/app'
 import { useNodesStore } from '@/stores/nodes'
 import { getSharedApi } from '@/utils/cfsmApi'
-import { formatBytes, formatBytesSplit } from '@/utils/helper'
+import { formatBytes, formatBytesSplit, mbToBytesOrNull } from '@/utils/helper'
 import { fillMissingTimePoints } from '@/utils/recordHelper'
 import '@/utils/echarts' // 共享 ECharts 配置
 
@@ -26,15 +26,8 @@ const nodesStore = useNodesStore()
 const MAX_HISTORY_HOURS = 168
 const maxRecordPreserveTime = computed(() => MAX_HISTORY_HOURS)
 
-// 数据更新间隔（秒）从 theme_options 读取，默认 3 秒
-const dataUpdateInterval = computed(() => {
-  const interval = appStore.themeOptions.dataUpdateInterval
-  // 确保值在合理范围内（1-60秒）
-  if (typeof interval === 'number' && interval >= 1 && interval <= 60) {
-    return interval * 1000 // 转换为毫秒
-  }
-  return 3000 // 默认 3 秒
-})
+// 数据更新间隔（毫秒）：取值与范围校验集中在 stores/app 的主题设置解析层
+const dataUpdateInterval = computed(() => appStore.dataUpdateInterval * 1000)
 
 // 使用 store 中的 isDark computed
 const isDark = computed(() => appStore.isDark)
@@ -203,14 +196,15 @@ function historyRowToRecord(row: HistoryMetricRow): RecordFormat {
     gpu: gpuUsageFrom(row.gpu_info),
     gpu_usage: null,
     gpu_memory: null,
-    ram: row.ram_used ?? null,
-    ram_total: row.ram_total ?? null,
-    swap: row.swap_used ?? null,
-    swap_total: row.swap_total ?? null,
+    // 容量类字段：CFSM 以 MB 上报，需换算为字节；`null` 保留断点语义
+    ram: mbToBytesOrNull(row.ram_used),
+    ram_total: mbToBytesOrNull(row.ram_total),
+    swap: mbToBytesOrNull(row.swap_used),
+    swap_total: mbToBytesOrNull(row.swap_total),
     load: Number.isFinite(load) ? load : null,
     temp: null,
-    disk: row.disk_used ?? null,
-    disk_total: row.disk_total ?? null,
+    disk: mbToBytesOrNull(row.disk_used),
+    disk_total: mbToBytesOrNull(row.disk_total),
     net_in: row.net_in_speed ?? null,
     net_out: row.net_out_speed ?? null,
     net_total_up: row.net_tx ?? null,

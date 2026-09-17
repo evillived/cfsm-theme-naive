@@ -165,6 +165,12 @@ class InitManager {
 
   /** 启动或切换实时订阅 */
   private startRealtime(subscribe: CfsmSubscribe): void {
+    // 「启用实时推送」关闭时只保留 REST 首屏数据，可显著降低后端额度消耗
+    if (!this.appStore.enableRealtime) {
+      this.pauseRealtime()
+      return
+    }
+
     if (!this.ws) {
       this.ws = new CfsmWsManager({
         api: this.api,
@@ -219,6 +225,15 @@ class InitManager {
   /** 列表页：恢复全量订阅 */
   subscribeAll(): void {
     this.startRealtime(this.allSubscribe())
+  }
+
+  /** 断开实时推送（关闭「启用实时推送」时调用） */
+  pauseRealtime(): void {
+    if (!this.ws)
+      return
+    this.ws.destroy()
+    this.ws = null
+    this.nodesStore.updateWsState('disconnected')
   }
 
   /** 补一次全量 REST 数据 */
@@ -306,4 +321,18 @@ export function subscribeAll(): void {
 /** 主动刷新服务器列表 */
 export async function refreshServers(): Promise<void> {
   await initManager?.refreshServers()
+}
+
+/**
+ * 应用「启用实时推送」设置的变更。
+ *
+ * 开启时按当前页面恢复订阅，关闭时断开连接；由 `App.vue` 监听设置变化后调用。
+ */
+export function applyRealtimeSetting(enabled: boolean): void {
+  if (!initManager)
+    return
+  if (enabled)
+    initManager.subscribeAll()
+  else
+    initManager.pauseRealtime()
 }

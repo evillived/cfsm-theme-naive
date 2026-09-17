@@ -71,16 +71,51 @@ CFSM Naive 是一个安静的运维看板。保留 Naive UI 克制的绿色强�
   组件大面积重写。字段注释标注了映射关系；CFSM 独有数据以新字段追加。
 - **增量合并在 store 内完成**：WebSocket 的 `batchUpdate` 样本是增量字段，`mergePatch` 逐字段判断
   「存在才覆盖」，避免缺失字段把已有值抹掉。
+- **容量单位在数据层归一化为字节**：CFSM 以 **MB** 上报 `ram_total` / `ram_used` / `swap_total` /
+  `swap_used` / `disk_total` / `disk_used`，而格式化函数（`formatBytes*`）与组件层统一按字节处理。
+  因此 `adaptServer`、`mergePatch` 与 `LoadChart` 的 `historyRowToRecord` 都必须经
+  `utils/helper` 的 `mbToBytes` / `mbToBytesOrNull` 换算；否则容量会按「字节」解释而显示成
+  原先的百万分之一（如 8 GB 显示为 8 KB）。网络累计量与速率字段本就是字节 / B/s，不需要换算。
+- **延迟与丢包的口径集中在 `latencyHelper`**：三态语义（`false` 未配置 / `null` 探测超时 /
+  `number` 有效值）必须原样贯穿数据层到展示层，取窗口点走 `pickLineValue`、取 REST/历史行走
+  `pickServerLineValue`、汇总走 `summarizeLatency`、分级与配色走 `latencyBadge` / `lossBadge`。
+  概览取**最差线路**而非最优，避免用一个好看的数值掩盖单条线路劣化；只要有线路超时就优先显示「超时」。
+  探测超时在图表中是**必须保留的断点**，不允许被 EWMA 或线性插值填补成看似正常的延迟值。
+- **延迟曲线取真实历史**：`/api/history/all` 的历史行本身携带 `ping_ct/cu/cm/bd` 与
+  `loss_ct/cu/cm/bd`，因此 `PingChart` 直接按所选档位（1 / 6 / 12 / 24 小时）拉取历史，
+  一行即一个图表点（无需再按任务分桶归并），丢包率也取自实测 `loss_*` 而非超时点占比推算。
 - **多站是一等公民**：每个 `apiBase` 独立请求、独立 WebSocket 连接，统计与区域数据按后端分别保存后再聚合。
 - **鉴权集中在 `CfsmAuth`**：Cookie / JWT / Turnstile 凭证三种来源由 `utils/init.ts` 组装，
   组件不感知鉴权细节。
+- **跨域资源必须服从站点 CSP**：CFSM 会对主题 HTML 下发 `Content-Security-Policy`，默认只放行
+  `'self'`、`challenges.cloudflare.com` 与 Google Fonts，其余来源要靠后台的 `csp_static` 设置。
+  因此 `index.html` 里**不得硬编码跨域资源**，否则会被拦截并在控制台报错。确需加载的跨域资源
+  走 `utils/webFont.ts` 的模式：先读取本文档实际生效的 CSP（meta + 响应头取交集），
+  **放行才注入、无法判定就不加载**，且不抛错、不阻塞渲染。
+- **正文字体 MiSans VF 按策略条件加载**：MiSans 的许可协议禁止二次分发字体文件，故不能自托管，
+  只能引用小米官方 CDN。默认策略下不加载，`fontFamily` 字体栈回落到 `sans-serif`；
+  管理员把 `https://cdn-font.hyperos.mi.com` 与 `https://cdn-file.hyperos.mi.com` 加入
+  `csp_static` 后即自动启用。数值字体 `TCloud Number VF` 无此限制，仍随产物自托管。
+- **主题设置是三级合并，且只有一条读取路径**：CFSM 的第三方主题不能调用管理端接口，
+  `/api/config` 的 `theme_options` 对主题只读，因此设置按「主题默认值 ← 后端预设 ← 本机覆盖」合并，
+  由 `utils/themeSettings` 的 `resolveThemeSettings` 统一解析，`stores/app` 只暴露解析结果。
+  组件一律读 `appStore` 的 computed，**不得直接读 `theme_options`**，否则本机设置不会生效。
+  - 本机覆盖只记录**相对后端预设改过的键**（`diffThemeSettings`），站长日后更新预设时，
+    访客没碰过的设置仍会跟着走；而不是把整份快照钉死在浏览器里。
+  - 数组 / 对象类配置（`cardMetrics`、`listViewColumns`、`listColumnWidths`…）在线格式上是
+    JSON 字符串（与 komari 一致），内部解析为原生形态，导出时再序列化回去，保证可双向搬运。
+  - 写回站点级配置**不通过接口**：`POST /api/theme_options` 只认 `Authorization: Bearer`，
+    而 `cfsm_auth` Cookie 是 HttpOnly 且仅用于 WebSocket 鉴权，主题读不到 JWT。站点级预设统一
+    走「复制配置 JSON → 粘贴到管理后台」，不在主题内做半可用的写入口。
+- **设置页的清单是数据，不是模板**：`THEME_SETTING_GROUPS` 声明分组、键、控件类型、默认值与
+  依赖关系，`ThemeSettings.vue` 只按 `kind` 渲染。增删设置项改清单即可，避免键名与默认值散落两处。
 
 ## 9. Accepted debt
 
-- 延迟图表只能展示近 `latency_window.hours` 小时的窗口数据（CFSM 没有延迟历史接口），
-  时间范围选择器已相应收敛。
 - `theme_options` 是自由对象，部分复杂配置（如列宽）仍以 JSON 字符串承载，解析保持防御式。
 - 仓库不含独立的组件展示页，首页本身就是各组件的状态演练场。
 - 亮色高对比变体保留不透明配色；玻璃变体刻意使用共享的 Naive 主题变量与 `color-mix()`，
   使其色调既区别于默认卡片，又能随背景变化响应。
 - 少数来自原主题的字段（`temp`、`virtualization`、`remark`）在 CFSM 无数据来源，保留为占位但不在 UI 中展示。
+- `NodeData` 仍保留 `ping_window` / `loss_window`（`/api/servers` 的近 2 小时窗口）。
+  自延迟曲线改用 `/api/history/all` 后，两者在 UI 中已无消费方，仅作为 wire 契约保留。

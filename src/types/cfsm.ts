@@ -29,6 +29,11 @@ export interface LatencyWindowPoint {
   cu?: number | null | false
   cm?: number | null | false
   bd?: number | null | false
+  /** 后台「自定义节点 1-4」；未配置时缺省 */
+  node1?: number | null | false
+  node2?: number | null | false
+  node3?: number | null | false
+  node4?: number | null | false
 }
 
 /** GPU 条目；新版上报与 WebSocket 实时数据为数组，历史/详情 REST 中可能是同结构的 JSON 字符串 */
@@ -186,6 +191,11 @@ export interface SiteConfig {
   custom_cu_name: string
   custom_cm_name: string
   custom_bd_name: string
+  /** 后台「自定义节点 1-4」的显示名；旧版后端可能不下发 */
+  node_1_name?: string
+  node_2_name?: string
+  node_3_name?: string
+  node_4_name?: string
   site_title: string
   /** auto / dark / light */
   preferred_theme: string

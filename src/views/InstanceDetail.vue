@@ -94,11 +94,13 @@ const hardwareInfo = computed<InfoItem[]>(() => [
   { label: 'GPU', value: data.value?.gpu_name || '-', icon: 'i-icon-park-outline-video-one' },
 ])
 
-/** 系统信息 */
+/**
+ * 系统信息。保持与原主题 komari-theme-naive 相同的 4 项：
+ * 左右两张卡片都是 2 行，避免出现高度不等导致的拉伸空白。
+ */
 const systemInfo = computed<InfoItem[]>(() => [
   { label: '操作系统', value: data.value?.os ?? '-', icon: 'i-icon-park-outline-computer' },
   { label: '内核版本', value: data.value?.kernel_version ?? '-', icon: 'i-icon-park-outline-code' },
-  { label: '探针版本', value: data.value?.version || '-', icon: 'i-icon-park-outline-application' },
   { label: '运行时间', value: formatUptime(data.value?.uptime ?? 0), icon: 'i-icon-park-outline-timer' },
   { label: '最后上报', value: formatDateTime(data.value?.time), icon: 'i-icon-park-outline-time' },
 ])

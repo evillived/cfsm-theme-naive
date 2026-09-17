@@ -3,6 +3,42 @@ import dayjs from 'dayjs'
 /** 字节单位常量 */
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'] as const
 
+/**
+ * CFSM 容量字段的换算系数：1 MB 的字节数。
+ *
+ * 官方 API 文档（`POST /update` 的 metrics 字段表）规定
+ * `ram_total` / `ram_used` / `swap_total` / `swap_used` / `disk_total` / `disk_used`
+ * 的单位是 **MB**；而本主题的格式化函数（`formatBytes*`）与组件层统一按 **字节** 处理。
+ * 因此凡是来自 CFSM 的容量字段，进入 view model 或图表数据之前都必须乘上该系数。
+ *
+ * 不需要换算的字段：`net_rx` / `net_tx` / `net_rx_monthly` / `net_tx_monthly` 单位是字节，
+ * `net_in_speed` / `net_out_speed` 单位是 B/s，`disk`（磁盘 IO）的 `read_bps` / `write_bps` 是 B/s。
+ */
+export const CFSM_MB = 1024 * 1024
+
+/**
+ * 把 CFSM 的 MB 容量字段换算为字节
+ * @param mb 以 MB 为单位的容量（如 CFSM `ram_total`）
+ * @returns 字节数；传入非有限数值时返回 0
+ */
+export function mbToBytes(mb: number | null | undefined): number {
+  if (typeof mb !== 'number' || !Number.isFinite(mb))
+    return 0
+  return mb * CFSM_MB
+}
+
+/**
+ * 把 CFSM 的 MB 容量字段换算为字节，并保留 `null` 语义。
+ * 用于历史序列：`null` 表示该时间点无数据，图表据此留出断点。
+ * @param mb 以 MB 为单位的容量
+ * @returns 字节数或 `null`
+ */
+export function mbToBytesOrNull(mb: number | null | undefined): number | null {
+  if (typeof mb !== 'number' || !Number.isFinite(mb))
+    return null
+  return mb * CFSM_MB
+}
+
 /** 时间单位配置（秒为单位） */
 const TIME_UNITS = [
   { value: 86400, label: '天' },

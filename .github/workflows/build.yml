@@ -3,10 +3,10 @@ name: Build Project
 on:
   push:
     branches:
-      - main  # 当 main 分支有代码推送时触发构建
+      - main # 当 main 分支有代码推送时触发构建
   pull_request:
     branches:
-      - main  # 当有针对 main 分支的 PR 时触发构建
+      - main # 当有针对 main 分支的 PR 时触发构建
 
 jobs:
   build:
@@ -28,7 +28,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: 'pnpm'
+          cache: pnpm
 
       # 4. 安装依赖
       - name: Install dependencies

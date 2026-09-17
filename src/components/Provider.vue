@@ -73,35 +73,18 @@ const NaiveProviderContent = defineComponent({
   },
 })
 
-// 从主题配置读取设置，支持亮色/暗色模式分别配置
+// 从主题设置读取，支持亮色/暗色模式分别配置（默认值在 utils/themeSettings 中统一定义）
 const themeOverride = computed<GlobalThemeOverrides>(() => {
-  const settings = appStore.themeOptions
-
-  // 通用默认值
-  const borderRadius = (settings?.borderRadius as string) || '3px'
-  const fontFamily = (settings?.fontFamily as string) || '"MiSans VF", sans-serif'
-
-  // 根据当前主题模式选择颜色配置
-  const primaryColor = isDark.value
-    ? (settings?.darkPrimaryColor as string) || '#63e2b6'
-    : (settings?.lightPrimaryColor as string) || '#18a058'
-
-  const primaryColorHover = isDark.value
-    ? (settings?.darkPrimaryColorHover as string) || '#7fe7c4'
-    : (settings?.lightPrimaryColorHover as string) || '#36ad6a'
-
-  const primaryColorPressed = isDark.value
-    ? (settings?.darkPrimaryColorPressed as string) || '#5acea7'
-    : (settings?.lightPrimaryColorPressed as string) || '#0c7a43'
+  const colors = appStore.primaryColors
 
   return {
     common: {
-      primaryColor,
-      primaryColorHover,
-      primaryColorPressed,
-      primaryColorSuppl: primaryColorHover,
-      borderRadius,
-      fontFamily,
+      primaryColor: colors.primary,
+      primaryColorHover: colors.hover,
+      primaryColorPressed: colors.pressed,
+      primaryColorSuppl: colors.hover,
+      borderRadius: appStore.borderRadius,
+      fontFamily: appStore.fontFamily,
     },
   }
 })

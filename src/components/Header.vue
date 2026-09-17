@@ -24,15 +24,30 @@ const containerStyle = computed(() => {
   }
 })
 
-const actionButtons = computed(() => {
-  const buttons = [
-    {
-      title: appStore.themeMode === 'auto' ? '自动主题' : appStore.themeMode === 'light' ? '浅色主题' : '深色主题',
-      icon: appStore.themeMode === 'auto' ? 'i-icon-park-outline-dark-mode' : appStore.themeMode === 'light' ? 'i-icon-park-outline-sun-one' : 'i-icon-park-outline-moon',
-      action: 'toggleTheme',
-      disabled: false,
-    },
-  ]
+interface HeaderAction {
+  title: string
+  icon: string
+  action: string
+  disabled: boolean
+}
+
+const actionButtons = computed<HeaderAction[]>(() => {
+  const buttons: HeaderAction[] = []
+
+  // 主题设置：与管理后台入口区分开（都做成齿轮会分不清），用「外观」语义的图标
+  buttons.push({
+    title: '主题设置',
+    icon: 'i-icon-park-outline-paint',
+    action: 'openSettings',
+    disabled: false,
+  })
+
+  buttons.push({
+    title: appStore.themeMode === 'auto' ? '自动主题' : appStore.themeMode === 'light' ? '浅色主题' : '深色主题',
+    icon: appStore.themeMode === 'auto' ? 'i-icon-park-outline-dark-mode' : appStore.themeMode === 'light' ? 'i-icon-park-outline-sun-one' : 'i-icon-park-outline-moon',
+    action: 'toggleTheme',
+    disabled: false,
+  })
 
   // 管理后台由内置默认主题接管；登录也在后台完成，主题不实现登录页
   if (appStore.showAdminEntry) {
@@ -49,6 +64,9 @@ const actionButtons = computed(() => {
 
 function handleButtonClick(action: string) {
   switch (action) {
+    case 'openSettings':
+      void router.push('/settings')
+      break
     case 'toggleTheme':
       appStore.updateThemeMode()
       break

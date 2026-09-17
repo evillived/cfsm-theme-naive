@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { NodeData } from '@/stores/nodes'
+import type { LatencySummary, QualityBadge } from '@/utils/latencyHelper'
 import { NBadge, NButton, NIcon, NList, NListItem, NModal, NProgress, NTag, NText, NTooltip, useThemeVars } from 'naive-ui'
 import { computed, ref } from 'vue'
 import PingChart from '@/components/PingChart.vue'
@@ -8,6 +9,7 @@ import { useGlassSurface } from '@/composables/useGlassSurface'
 import { useAppStore } from '@/stores/app'
 import { useNodesStore } from '@/stores/nodes'
 import { formatBytesPerSecondWithConfig, formatBytesWithConfig, formatDateTime, formatUptimeWithFormat, getStatus } from '@/utils/helper'
+import { formatLatencyValue, formatLossValue, latencyBadge, latencyHex, lossBadge, lossHex, summarizeLatency } from '@/utils/latencyHelper'
 import { getOSImage, getOSName } from '@/utils/osImageHelper'
 import { getFlagUrl, getRegionDisplayName } from '@/utils/regionHelper'
 import { formatPriceWithCycle, getDaysUntilExpired, getExpireStatus, parseTags } from '@/utils/tagHelper'
@@ -90,6 +92,8 @@ const sortedNodes = computed(() => {
           ((a.net_out ?? 0) + (a.net_in ?? 0))
           - ((b.net_out ?? 0) + (b.net_in ?? 0))
         )
+      case 'latency':
+        return dir * (latencySortValue(a) - latencySortValue(b))
       case 'rate':
         return dir * (
           ((a.net_out ?? 0) + (a.net_in ?? 0))
@@ -320,6 +324,65 @@ function getNodeTags(node: NodeData): Array<{ text: string, color: string }> {
 }
 
 // 列标题映射
+// ===== 延迟与丢包 =====
+//
+// CFSM 的 `ping_ct/cu/cm/bd` 与 `loss_ct/cu/cm/bd` 是标量字段（三网详情开关只影响窗口数组），
+// 列表可直接展示。这里按 uuid 预计算一次，避免在模板中反复遍历。
+
+/** 线路显示名，取站点配置的自定义名称（三网 + BGP + 自定义节点 1-4） */
+const latencyLineNames = computed(() => ({
+  ct: appStore.siteConfig?.custom_ct_name,
+  cu: appStore.siteConfig?.custom_cu_name,
+  cm: appStore.siteConfig?.custom_cm_name,
+  bd: appStore.siteConfig?.custom_bd_name,
+  node1: appStore.siteConfig?.node_1_name,
+  node2: appStore.siteConfig?.node_2_name,
+  node3: appStore.siteConfig?.node_3_name,
+  node4: appStore.siteConfig?.node_4_name,
+}))
+
+interface LatencyCell {
+  summary: LatencySummary
+  latency: QualityBadge
+  loss: QualityBadge
+}
+
+const EMPTY_LATENCY_CELL: LatencyCell = {
+  summary: { hasData: false, lines: [], worstLatency: null, hasTimeout: false, maxLoss: null, hasLoss: false },
+  latency: { text: '', color: '', grade: 'unknown' },
+  loss: { text: '', color: '', grade: 'unknown' },
+}
+
+const latencyCells = computed(() => {
+  const map = new Map<string, LatencyCell>()
+  for (const node of props.nodes) {
+    const summary = summarizeLatency(node, latencyLineNames.value)
+    map.set(node.uuid, {
+      summary,
+      latency: latencyBadge(summary),
+      loss: lossBadge(summary),
+    })
+  }
+  return map
+})
+
+function getLatencyCell(node: NodeData): LatencyCell {
+  return latencyCells.value.get(node.uuid) ?? EMPTY_LATENCY_CELL
+}
+
+/** 是否在 tooltip 中展开逐线明细（需后台开启三网详情且多于一条线路） */
+function showLatencyBreakdown(node: NodeData): boolean {
+  return nodesStore.showThreeNetDetails && getLatencyCell(node).summary.lines.length > 1
+}
+
+/** 排序取值：探测超时视为最差，未配置（-1）排最后 */
+function latencySortValue(node: NodeData): number {
+  const cell = getLatencyCell(node)
+  if (cell.summary.hasTimeout)
+    return Number.MAX_SAFE_INTEGER
+  return cell.summary.worstLatency ?? -1
+}
+
 const columnTitles: Record<string, string> = {
   status: '状态',
   region: '地区',
@@ -331,6 +394,7 @@ const columnTitles: Record<string, string> = {
   mem: '内存',
   disk: '硬盘',
   traffic: '流量',
+  latency: '延迟',
   rate: '速率',
 }
 </script>
@@ -500,6 +564,49 @@ const columnTitles: Record<string, string> = {
                 </div>
                 <NProgress :show-indicator="false" :percentage="(node.disk ?? 0) / (node.disk_total || 1) * 100" :status="getStatus((node.disk ?? 0) / (node.disk_total || 1) * 100)" :height="4" />
               </div>
+            </div>
+
+            <!-- 延迟与丢包 -->
+            <div v-else-if="col === 'latency'" class="node-list-item__latency" :style="getColumnStyle('latency')">
+              <NTooltip :disabled="!showLatencyBreakdown(node)" :trigger="isTouchDevice ? 'click' : 'hover'">
+                <template #trigger>
+                  <div
+                    class="text-[11px] flex flex-col gap-0.5"
+                    :class="{ 'cursor-help': !isTouchDevice && showLatencyBreakdown(node) }"
+                    :style="{ fontFamily: appStore.numberFontFamily }"
+                    @click.stop
+                  >
+                    <template v-if="getLatencyCell(node).summary.hasData">
+                      <NText v-if="getLatencyCell(node).latency.text" :style="{ color: getLatencyCell(node).latency.color, fontWeight: 500 }">
+                        {{ getLatencyCell(node).latency.text }}
+                      </NText>
+                      <NText v-else :depth="3">
+                        —
+                      </NText>
+                      <NText v-if="getLatencyCell(node).loss.text" :depth="3" :style="{ color: getLatencyCell(node).loss.color }">
+                        {{ getLatencyCell(node).loss.text }} 丢包
+                      </NText>
+                      <NText v-else :depth="3">
+                        —
+                      </NText>
+                    </template>
+                    <NText v-else :depth="3">
+                      —
+                    </NText>
+                  </div>
+                </template>
+                <div class="text-[11px] flex flex-col gap-1" :style="{ fontFamily: appStore.numberFontFamily }">
+                  <span
+                    v-for="line in getLatencyCell(node).summary.lines"
+                    :key="line.key"
+                    class="flex gap-3 items-center justify-between"
+                  >
+                    <span style="color: var(--n-text-color-3)">{{ line.name }}</span>
+                    <span :style="{ color: latencyHex(line.latency) }">{{ formatLatencyValue(line.latency) || '—' }}</span>
+                    <span :style="{ color: lossHex(line.loss) }">{{ formatLossValue(line.loss) || '—' }}</span>
+                  </span>
+                </div>
+              </NTooltip>
             </div>
 
             <!-- 速率 -->
@@ -737,6 +844,11 @@ const columnTitles: Record<string, string> = {
 
 .node-list-header__traffic,
 .node-list-item__traffic {
+  min-width: 0;
+}
+
+.node-list-header__latency,
+.node-list-item__latency {
   min-width: 0;
 }
 

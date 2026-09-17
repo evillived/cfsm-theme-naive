@@ -1,6 +1,7 @@
 import type { DiskIoMetrics, GpuInfo, LatencyWindowPoint, Server, ServersResponse, ServersStats, SysConfig } from '@/types/cfsm'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { mbToBytes } from '@/utils/helper'
 
 /** 流量计费口径（CFSM `traffic_calc_type`） */
 export type TrafficLimitType = 'total' | 'sum' | 'max' | 'min' | 'up' | 'down'
@@ -84,10 +85,12 @@ export interface NodeData {
   /** CFSM `traffic_limit` 原始字符串 */
   traffic_limit_raw: string
   traffic_limit_type: TrafficLimitType
-  // ===== 容量 =====
-  /** CFSM `ram_total` */
+  // ===== 容量（单位统一为字节；CFSM 原始字段为 MB，见 utils/helper 的 mbToBytes） =====
+  /** CFSM `ram_total`（MB → 字节） */
   mem_total: number
+  /** CFSM `swap_total`（MB → 字节） */
   swap_total: number
+  /** CFSM `disk_total`（MB → 字节） */
   disk_total: number
   // ===== 实时指标 =====
   online: boolean
@@ -98,16 +101,16 @@ export interface NodeData {
   cpu: number
   /** 取自 CFSM `gpu_info` 第一项的 info */
   gpu: number
-  /** CFSM `ram_used` */
+  /** CFSM `ram_used`（MB → 字节） */
   ram: number
-  /** CFSM `swap_used` */
+  /** CFSM `swap_used`（MB → 字节） */
   swap: number
   load: number
   load5: number
   load15: number
   /** CFSM 未提供温度，固定为 0 */
   temp: number
-  /** CFSM `disk_used` */
+  /** CFSM `disk_used`（MB → 字节） */
   disk: number
   /** CFSM `net_in_speed` */
   net_in: number
@@ -334,21 +337,22 @@ function adaptServer(server: Server, apiBase: string): NodeData {
     traffic_limit: parseTrafficBytes(server.traffic_limit),
     traffic_limit_raw: server.traffic_limit ?? '',
     traffic_limit_type: (server.traffic_calc_type || 'total') as TrafficLimitType,
-    mem_total: server.ram_total,
-    swap_total: server.swap_total,
-    disk_total: server.disk_total,
+    // 容量类字段：CFSM 以 MB 上报，统一换算为字节
+    mem_total: mbToBytes(server.ram_total),
+    swap_total: mbToBytes(server.swap_total),
+    disk_total: mbToBytes(server.disk_total),
     online: server.is_online ?? (Date.now() - lastUpdated < ONLINE_THRESHOLD_MS),
     time: toIsoTime(lastUpdated),
     lastUpdatedMs: lastUpdated,
     cpu: server.cpu,
     gpu: gpu[0]?.info ?? 0,
-    ram: server.ram_used,
-    swap: server.swap_used,
+    ram: mbToBytes(server.ram_used),
+    swap: mbToBytes(server.swap_used),
     load: load1,
     load5,
     load15,
     temp: 0,
-    disk: server.disk_used,
+    disk: mbToBytes(server.disk_used),
     net_in: server.net_in_speed,
     net_out: server.net_out_speed,
     net_total_up: server.net_tx,
@@ -381,18 +385,19 @@ function mergePatch(node: NodeData, patch: Partial<Server>, ts: number): NodeDat
 
   if (typeof patch.cpu === 'number')
     next.cpu = patch.cpu
+  // 容量类字段：CFSM 以 MB 上报，统一换算为字节
   if (typeof patch.ram_used === 'number')
-    next.ram = patch.ram_used
+    next.ram = mbToBytes(patch.ram_used)
   if (typeof patch.ram_total === 'number')
-    next.mem_total = patch.ram_total
+    next.mem_total = mbToBytes(patch.ram_total)
   if (typeof patch.swap_used === 'number')
-    next.swap = patch.swap_used
+    next.swap = mbToBytes(patch.swap_used)
   if (typeof patch.swap_total === 'number')
-    next.swap_total = patch.swap_total
+    next.swap_total = mbToBytes(patch.swap_total)
   if (typeof patch.disk_used === 'number')
-    next.disk = patch.disk_used
+    next.disk = mbToBytes(patch.disk_used)
   if (typeof patch.disk_total === 'number')
-    next.disk_total = patch.disk_total
+    next.disk_total = mbToBytes(patch.disk_total)
   if (typeof patch.net_in_speed === 'number')
     next.net_in = patch.net_in_speed
   if (typeof patch.net_out_speed === 'number')

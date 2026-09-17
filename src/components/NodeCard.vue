@@ -8,6 +8,7 @@ import { useGlassSurface } from '@/composables/useGlassSurface'
 import { useAppStore } from '@/stores/app'
 import { useNodesStore } from '@/stores/nodes'
 import { formatBytesPerSecondWithConfig, formatBytesWithConfig, formatDateTime, formatUptimeWithFormat, getStatus } from '@/utils/helper'
+import { latencyInlineSegments, summarizeLatency } from '@/utils/latencyHelper'
 import { getOSImage, getOSName } from '@/utils/osImageHelper'
 import { getFlagUrl, getRegionDisplayName } from '@/utils/regionHelper'
 import { formatPriceWithCycle, getDaysUntilExpired, getExpireStatus, getExpireStatusHexColor, parseTags } from '@/utils/tagHelper'
@@ -146,6 +147,27 @@ const shouldShowTagsInSeparateRow = computed(() => {
 })
 
 const visibleMetrics = computed(() => new Set(appStore.cardMetrics))
+
+// ===== 延迟与丢包 =====
+//
+// CFSM 的 `ping_ct/cu/cm/bd` 与 `loss_ct/cu/cm/bd` 是标量字段（三网详情开关只影响窗口数组），
+// 因此卡片可以直接展示当前延迟与丢包，无需依赖 `showThreeNetDetails`。
+
+/** 线路显示名，取站点配置的自定义名称（三网 + BGP + 自定义节点 1-4） */
+const latencyLineNames = computed(() => ({
+  ct: appStore.siteConfig?.custom_ct_name,
+  cu: appStore.siteConfig?.custom_cu_name,
+  cm: appStore.siteConfig?.custom_cm_name,
+  bd: appStore.siteConfig?.custom_bd_name,
+  node1: appStore.siteConfig?.node_1_name,
+  node2: appStore.siteConfig?.node_2_name,
+  node3: appStore.siteConfig?.node_3_name,
+  node4: appStore.siteConfig?.node_4_name,
+}))
+
+const latencySummary = computed(() => summarizeLatency(props.node, latencyLineNames.value))
+/** 卡片内单行并排的线路明细：`电信·55ms·0.1%`、`东京·111ms·0%` */
+const latencySegments = computed(() => latencyInlineSegments(latencySummary.value))
 
 function handleCardKeydown(event: KeyboardEvent): void {
   if (event.key !== 'Enter' || event.target !== event.currentTarget)
@@ -348,6 +370,34 @@ function handleCardKeydown(event: KeyboardEvent): void {
               </div>
             </div>
 
+            <!-- 延迟（逐线并排：名称 · 延迟，用 | 分隔；延迟数字按丢包率着色，丢包数字走悬浮提示） -->
+            <div v-if="latencySegments.length > 0" class="flex-between">
+              <NText :depth="3" class="text-[13px]">
+                延迟
+              </NText>
+              <div
+                class="latency-inline text-[13px] flex flex-wrap gap-y-0.5 justify-end"
+                :style="{ fontFamily: appStore.numberFontFamily }"
+              >
+                <span
+                  v-for="segment in latencySegments"
+                  :key="segment.key"
+                  class="latency-inline__item whitespace-nowrap"
+                >
+                  <NTooltip :disabled="!segment.loss">
+                    <template #trigger>
+                      <span :class="{ 'cursor-help': !!segment.loss }">
+                        <span :style="{ color: themeVars.textColor3 }">{{ segment.name }}</span>
+                        <span :style="{ color: themeVars.textColor3 }"> · </span>
+                        <span :style="{ color: segment.latencyColor, fontWeight: 500 }">{{ segment.latency }}</span>
+                      </span>
+                    </template>
+                    <span>{{ segment.loss }} 丢包</span>
+                  </NTooltip>
+                </span>
+              </div>
+            </div>
+
             <!-- 运行时间 -->
             <div class="uptime-row flex-between">
               <NText :depth="3" class="text-[13px]">
@@ -424,6 +474,13 @@ function handleCardKeydown(event: KeyboardEvent): void {
 .node-card {
   position: relative;
   overflow: hidden;
+}
+
+/* 线路延迟并排：线路之间用 | 分隔（放在后一项的前面，换行时不会出现行首孤立的 |） */
+.latency-inline__item + .latency-inline__item::before {
+  content: '|';
+  margin: 0 0.375rem;
+  color: var(--n-text-color-3);
 }
 
 .node-card-shell:focus-visible {

@@ -1,90 +1,24 @@
 import type { SiteConfig } from '@/types/cfsm'
-import type { ByteDecimalsConfig, UptimeFormat } from '@/utils/helper'
+import type { UptimeFormat } from '@/utils/helper'
+import type { ThemeMode } from '@/utils/themeSettings'
 import { usePreferredDark, useStorageAsync } from '@vueuse/core'
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
+import { useThemeSettingsStore } from '@/stores/themeSettings'
+import { resolveThemeSettings, toByteDecimals } from '@/utils/themeSettings'
 
-type ThemeMode = 'auto' | 'light' | 'dark'
 type Lang = 'zh-CN' | 'en-US'
 type NodeViewMode = 'card' | 'list'
-type AlertType = 'default' | 'info' | 'success' | 'warning' | 'error'
-export type CardSize = 'compact' | 'comfortable' | 'spacious'
-export type CardMetric = 'cpu' | 'memory' | 'disk' | 'traffic'
-
-const DEFAULT_CARD_METRICS: CardMetric[] = ['cpu', 'memory', 'disk', 'traffic']
-
-/** 默认的 List 视图列配置 */
-const DEFAULT_LIST_VIEW_COLUMNS = ['status', 'region', 'name', 'tags', 'uptime', 'os', 'cpu', 'mem', 'disk', 'traffic', 'rate'] as const
-type ListViewColumn = typeof DEFAULT_LIST_VIEW_COLUMNS[number]
-
-/** 默认的 List 视图列宽度配置 */
-const DEFAULT_LIST_COLUMN_WIDTHS: Record<string, string> = {
-  status: '76px',
-  region: '32px',
-  name: 'minmax(200px, 1fr)',
-  tags: '200px',
-  uptime: 'minmax(180px, 0.6fr)',
-  os: '120px',
-  cpu: '180px',
-  mem: '180px',
-  disk: '180px',
-  traffic: '180px',
-  rate: '140px',
-}
-
-/** 默认的字节精度配置 */
-const DEFAULT_BYTE_DECIMALS: ByteDecimalsConfig = {
-  B: 0,
-  KB: 0,
-  MB: 1,
-  GB: 1,
-  TB: 2,
-}
 
 /** CF-Server-Monitor 的管理后台入口，由内置默认主题接管 */
 export const ADMIN_URL = '/admin#admin'
 
-// ==================== theme_options 读取辅助 ====================
-//
-// CFSM 的 theme_options 是自由对象：后端不校验类型，主题必须自行做防御式解析。
-// 键名沿用本主题既有命名，便于后续接入配置面板。
-
-function optString(options: Record<string, unknown>, key: string, fallback: string): string {
-  const value = options[key]
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback
-}
-
-function optBool(options: Record<string, unknown>, key: string, fallback: boolean): boolean {
-  const value = options[key]
-  return typeof value === 'boolean' ? value : fallback
-}
-
-function optNumber(options: Record<string, unknown>, key: string, fallback: number): number {
-  const value = options[key]
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
-}
-
-function optEnum<T extends string>(
-  options: Record<string, unknown>,
-  key: string,
-  allowed: readonly T[],
-  fallback: T,
-): T {
-  const value = options[key]
-  return typeof value === 'string' && (allowed as readonly string[]).includes(value) ? value as T : fallback
-}
-
-/** 解析 JSON 字符串配置（如 listViewColumns），非法时返回 null */
-function optJson(options: Record<string, unknown>, key: string): unknown {
-  const value = options[key]
-  if (typeof value !== 'string' || !value.trim())
-    return null
-  try {
-    return JSON.parse(value) as unknown
-  }
-  catch {
-    return null
-  }
+/**
+ * 站点通过 `<meta name="preferredTheme">` 下发的默认外观（可选）。
+ * CFSM 自身用 `/api/config` 的 `preferred_theme`，这里只做兜底解析。
+ */
+function readPreferredTheme(value: unknown): ThemeMode {
+  return value === 'light' || value === 'dark' || value === 'auto' ? value : 'auto'
 }
 
 /** 比较形如 "2.7.12 Beta" 的版本号，a < b 返回负数 */
@@ -103,6 +37,8 @@ function compareVersion(a: string, b: string): number {
 }
 
 const useAppStore = defineStore('app', () => {
+  const themeSettingsStore = useThemeSettingsStore()
+
   const loading = ref<boolean>(true)
 
   // CFSM 站点配置（GET /api/config）
@@ -120,8 +56,21 @@ const useAppStore = defineStore('app', () => {
   // 使用 null 表示未设置，等待主题配置加载后决定
   const storedViewMode = useStorageAsync<NodeViewMode | null>('nodeViewMode', null, localStorage)
 
-  /** 主题自定义配置；未配置时为空对象 */
-  const themeOptions = computed<Record<string, unknown>>(() => siteConfig.value?.theme_options ?? {})
+  // ==================== 主题设置 ====================
+
+  /** 站长在后台「主题自定义配置」里写的预设；未配置时为空对象 */
+  const backendThemeOptions = computed<Record<string, unknown>>(() => siteConfig.value?.theme_options ?? {})
+
+  /** 本机在主题设置页里改过的键；未改过时为空对象 */
+  const localThemeOverrides = computed<Record<string, unknown>>(() => themeSettingsStore.overrides)
+
+  /**
+   * 生效中的主题设置：默认值 ← 后端预设 ← 本机覆盖。
+   *
+   * 所有设置类消费方都应读这里，而不是直接读 `backendThemeOptions`——
+   * 否则本机设置不会生效。
+   */
+  const themeSettings = computed(() => resolveThemeSettings(backendThemeOptions.value, localThemeOverrides.value))
 
   // ==================== 站点信息 ====================
 
@@ -165,9 +114,7 @@ const useAppStore = defineStore('app', () => {
   // ==================== 主题模式 ====================
 
   /** 后台配置的默认外观（CFSM preferred_theme） */
-  const preferredTheme = computed<ThemeMode>(() =>
-    optEnum<ThemeMode>({ value: siteConfig.value?.preferred_theme }, 'value', ['auto', 'light', 'dark'], 'auto'),
-  )
+  const preferredTheme = computed<ThemeMode>(() => readPreferredTheme(siteConfig.value?.preferred_theme))
 
   /** 当前主题模式：用户选择优先，未选择时跟随后台 preferred_theme */
   const themeMode = computed<ThemeMode>({
@@ -207,9 +154,7 @@ const useAppStore = defineStore('app', () => {
 
   // ==================== 视图模式 ====================
 
-  const defaultViewMode = computed<NodeViewMode>(() =>
-    optEnum<NodeViewMode>(themeOptions.value, 'defaultViewMode', ['card', 'list'], 'card'),
-  )
+  const defaultViewMode = computed<NodeViewMode>(() => themeSettings.value.defaultViewMode)
 
   function isValidViewMode(value: string | null): value is NodeViewMode {
     return value === 'card' || value === 'list'
@@ -232,184 +177,137 @@ const useAppStore = defineStore('app', () => {
       storedViewMode.value = defaultViewMode.value
   })
 
+  // ==================== 运行与访问 ====================
+
+  /** 图表轮询与动画的刷新间隔（秒） */
+  const dataUpdateInterval = computed<number>(() => themeSettings.value.dataUpdateInterval)
+
+  /** 是否启用 WebSocket 实时推送 */
+  const enableRealtime = computed<boolean>(() => themeSettings.value.enableRealtime)
+
+  const showAdminEntry = computed<boolean>(() => themeSettings.value.showAdminEntry)
+
+  const hideSingleGroupTab = computed<boolean>(() => themeSettings.value.hideSingleGroupTab)
+
+  const showPingChartButton = computed<boolean>(() => themeSettings.value.showPingChartButton)
+
   // ==================== 布局与卡片 ====================
 
-  const showAdminEntry = computed<boolean>(() => optBool(themeOptions.value, 'showAdminEntry', true))
+  const showGeneralCards = computed<boolean>(() => themeSettings.value.showGeneralCards)
 
-  const fullWidth = computed<boolean>(() => optBool(themeOptions.value, 'fullWidth', false))
+  const fullWidth = computed<boolean>(() => themeSettings.value.fullWidth)
 
-  const maxPageWidth = computed<string>(() => optString(themeOptions.value, 'maxPageWidth', '1800px'))
+  const maxPageWidth = computed<string>(() => themeSettings.value.maxPageWidth)
 
-  const cardProgressLayout = computed<'1col' | '2col'>(() =>
-    optEnum<'1col' | '2col'>(themeOptions.value, 'cardProgressLayout', ['1col', '2col'], '2col'),
-  )
+  const borderRadius = computed<string>(() => themeSettings.value.borderRadius)
 
-  const cardSize = computed<CardSize>(() =>
-    optEnum<CardSize>(themeOptions.value, 'cardSize', ['compact', 'comfortable', 'spacious'], 'comfortable'),
-  )
+  const fontFamily = computed<string>(() => themeSettings.value.fontFamily)
 
-  const cardMinWidth = computed<number>(() => {
-    const value = optNumber(themeOptions.value, 'cardMinWidth', 340)
-    return value >= 280 && value <= 520 ? value : 340
-  })
+  const numberFontFamily = computed<string>(() => themeSettings.value.numberFontFamily)
 
-  const cardMetrics = computed<CardMetric[]>(() => {
-    const parsed = optJson(themeOptions.value, 'cardMetrics')
-    if (!Array.isArray(parsed))
-      return DEFAULT_CARD_METRICS
-    const metrics = parsed.filter((metric): metric is CardMetric => DEFAULT_CARD_METRICS.includes(metric as CardMetric))
-    return metrics.length > 0 ? [...new Set(metrics)] : DEFAULT_CARD_METRICS
-  })
+  const cardProgressLayout = computed(() => themeSettings.value.cardProgressLayout)
 
-  const showGeneralCards = computed<boolean>(() => optBool(themeOptions.value, 'showGeneralCards', true))
+  const cardSize = computed(() => themeSettings.value.cardSize)
 
-  const numberFontFamily = computed<string>(() =>
-    optString(themeOptions.value, 'numberFontFamily', '"TCloud Number VF", "MiSans VF", sans-serif'),
-  )
+  const cardMinWidth = computed<number>(() => themeSettings.value.cardMinWidth)
 
-  const hideSingleGroupTab = computed<boolean>(() => optBool(themeOptions.value, 'hideSingleGroupTab', true))
+  const cardMetrics = computed(() => themeSettings.value.cardMetrics)
 
-  const tagsInSeparateRow = computed<boolean>(() => optBool(themeOptions.value, 'tagsInSeparateRow', false))
+  const tagsInSeparateRow = computed<boolean>(() => themeSettings.value.tagsInSeparateRow)
 
-  const uptimeTagWrap = computed<boolean>(() => optBool(themeOptions.value, 'uptimeTagWrap', false))
+  const uptimeTagWrap = computed<boolean>(() => themeSettings.value.uptimeTagWrap)
 
-  const uptimeFormat = computed<UptimeFormat>(() =>
-    optEnum<UptimeFormat>(themeOptions.value, 'uptimeFormat', ['day', 'hour', 'minute', 'second'], 'day'),
-  )
+  const uptimeFormat = computed<UptimeFormat>(() => themeSettings.value.uptimeFormat)
 
-  const lightCardContrast = computed<boolean>(() => optBool(themeOptions.value, 'lightCardContrast', false))
+  const lightCardContrast = computed<boolean>(() => themeSettings.value.lightCardContrast)
 
-  const trafficSplitColor = computed<boolean>(() => optBool(themeOptions.value, 'trafficSplitColor', true))
+  const trafficSplitColor = computed<boolean>(() => themeSettings.value.trafficSplitColor)
 
-  const showPingChartButton = computed<boolean>(() => optBool(themeOptions.value, 'showPingChartButton', true))
+  // ==================== 主题配色 ====================
+
+  const lightPrimaryColor = computed<string>(() => themeSettings.value.lightPrimaryColor)
+  const lightPrimaryColorHover = computed<string>(() => themeSettings.value.lightPrimaryColorHover)
+  const lightPrimaryColorPressed = computed<string>(() => themeSettings.value.lightPrimaryColorPressed)
+
+  const darkPrimaryColor = computed<string>(() => themeSettings.value.darkPrimaryColor)
+  const darkPrimaryColorHover = computed<string>(() => themeSettings.value.darkPrimaryColorHover)
+  const darkPrimaryColorPressed = computed<string>(() => themeSettings.value.darkPrimaryColorPressed)
+
+  /** 当前外观下生效的主色三元组 */
+  const primaryColors = computed(() => (isDark.value
+    ? {
+        primary: darkPrimaryColor.value,
+        hover: darkPrimaryColorHover.value,
+        pressed: darkPrimaryColorPressed.value,
+      }
+    : {
+        primary: lightPrimaryColor.value,
+        hover: lightPrimaryColorHover.value,
+        pressed: lightPrimaryColorPressed.value,
+      }))
 
   // ==================== List 视图 ====================
 
-  const listViewColumns = computed<ListViewColumn[]>(() => {
-    const parsed = optJson(themeOptions.value, 'listViewColumns')
-    if (!Array.isArray(parsed) || parsed.length === 0)
-      return [...DEFAULT_LIST_VIEW_COLUMNS]
+  const listViewColumns = computed(() => themeSettings.value.listViewColumns)
 
-    const validColumns: ListViewColumn[] = []
-    for (const col of parsed) {
-      if (typeof col === 'string' && DEFAULT_LIST_VIEW_COLUMNS.includes(col as ListViewColumn))
-        validColumns.push(col as ListViewColumn)
-    }
-    return validColumns.length > 0 ? validColumns : [...DEFAULT_LIST_VIEW_COLUMNS]
-  })
+  const listColumnWidths = computed<Record<string, string>>(() => themeSettings.value.listColumnWidths)
 
-  const listColumnWidths = computed<Record<string, string>>(() => {
-    const parsed = optJson(themeOptions.value, 'listColumnWidths')
-    const merged = { ...DEFAULT_LIST_COLUMN_WIDTHS }
-    if (typeof parsed !== 'object' || parsed === null)
-      return merged
-    const record = parsed as Record<string, unknown>
-    for (const col of DEFAULT_LIST_VIEW_COLUMNS) {
-      const value = record[col]
-      if (typeof value === 'string' && value.trim())
-        merged[col] = value.trim()
-    }
-    return merged
-  })
+  const listColumnPadding = computed<Record<string, string>>(() => themeSettings.value.listColumnPadding)
 
-  /** 解析「列名 → CSS 值」形式的 JSON 配置 */
-  function readColumnValues(key: string): Record<string, string> {
-    const parsed = optJson(themeOptions.value, key)
-    const result: Record<string, string> = {}
-    if (typeof parsed !== 'object' || parsed === null)
-      return result
-    const record = parsed as Record<string, unknown>
-    for (const col of DEFAULT_LIST_VIEW_COLUMNS) {
-      const value = record[col]
-      if (typeof value === 'string' && value.trim())
-        result[col] = value.trim()
-    }
-    return result
-  }
+  const listColumnMargin = computed<Record<string, string>>(() => themeSettings.value.listColumnMargin)
 
-  const listColumnPadding = computed<Record<string, string>>(() => readColumnValues('listColumnPadding'))
-  const listColumnMargin = computed<Record<string, string>>(() => readColumnValues('listColumnMargin'))
-  const listColumnGap = computed<string>(() => optString(themeOptions.value, 'listColumnGap', '12px'))
-  const listRowHeight = computed<string>(() => optString(themeOptions.value, 'listRowHeight', ''))
+  const listColumnGap = computed<string>(() => themeSettings.value.listColumnGap)
 
-  const listStatusStyle = computed<'tag' | 'badge'>(() =>
-    optEnum<'tag' | 'badge'>(themeOptions.value, 'listStatusStyle', ['tag', 'badge'], 'tag'),
-  )
+  const listRowHeight = computed<string>(() => themeSettings.value.listRowHeight)
 
-  const listTagsStyle = computed<'tag' | 'badge'>(() =>
-    optEnum<'tag' | 'badge'>(themeOptions.value, 'listTagsStyle', ['tag', 'badge'], 'tag'),
-  )
+  const listStatusStyle = computed(() => themeSettings.value.listStatusStyle)
+
+  const listTagsStyle = computed(() => themeSettings.value.listTagsStyle)
 
   // ==================== 格式化 ====================
 
-  const byteDecimals = computed<ByteDecimalsConfig>(() => {
-    const options = themeOptions.value
-    const config: ByteDecimalsConfig = { ...DEFAULT_BYTE_DECIMALS }
-    const read = (key: string) => {
-      const value = options[key]
-      return typeof value === 'number' && Number.isInteger(value) ? value : undefined
-    }
-    config.B = read('byteDecimalsB') ?? config.B
-    config.KB = read('byteDecimalsKB') ?? config.KB
-    config.MB = read('byteDecimalsMB') ?? config.MB
-    config.GB = read('byteDecimalsGB') ?? config.GB
-    config.TB = read('byteDecimalsTB') ?? config.TB
-    return config
-  })
+  const byteDecimals = computed(() => toByteDecimals(themeSettings.value))
 
   // ==================== 公告 ====================
 
-  const alertEnabled = computed<boolean>(() => optBool(themeOptions.value, 'alertEnabled', false))
+  const alertEnabled = computed<boolean>(() => themeSettings.value.alertEnabled)
 
-  const alertType = computed<AlertType>(() =>
-    optEnum<AlertType>(themeOptions.value, 'alertType', ['default', 'info', 'success', 'warning', 'error'], 'info'),
-  )
+  const alertType = computed(() => themeSettings.value.alertType)
 
-  const alertTitle = computed<string>(() => optString(themeOptions.value, 'alertTitle', ''))
-  const alertContent = computed<string>(() => optString(themeOptions.value, 'alertContent', ''))
+  const alertTitle = computed<string>(() => themeSettings.value.alertTitle)
+  const alertContent = computed<string>(() => themeSettings.value.alertContent)
 
   // ==================== 备案 ====================
 
-  const icpEnabled = computed<boolean>(() => optBool(themeOptions.value, 'icpEnabled', false))
-  const icpNumber = computed<string>(() => optString(themeOptions.value, 'icpNumber', ''))
-  const icpUrl = computed<string>(() => optString(themeOptions.value, 'icpUrl', 'https://beian.miit.gov.cn/'))
+  const icpEnabled = computed<boolean>(() => themeSettings.value.icpEnabled)
+  const icpNumber = computed<string>(() => themeSettings.value.icpNumber)
+  const icpUrl = computed<string>(() => themeSettings.value.icpUrl)
 
-  const policeEnabled = computed<boolean>(() => optBool(themeOptions.value, 'policeEnabled', false))
-  const policeNumber = computed<string>(() => optString(themeOptions.value, 'policeNumber', ''))
-  const policeUrl = computed<string>(() => optString(themeOptions.value, 'policeUrl', ''))
+  const policeEnabled = computed<boolean>(() => themeSettings.value.policeEnabled)
+  const policeNumber = computed<string>(() => themeSettings.value.policeNumber)
+  const policeUrl = computed<string>(() => themeSettings.value.policeUrl)
 
   // ==================== 自定义背景 ====================
 
-  const backgroundEnabled = computed<boolean>(() => optBool(themeOptions.value, 'backgroundEnabled', false))
+  const backgroundEnabled = computed<boolean>(() => themeSettings.value.backgroundEnabled)
 
-  const backgroundType = computed<'image' | 'video'>(() =>
-    optEnum<'image' | 'video'>(themeOptions.value, 'backgroundType', ['image', 'video'], 'image'),
-  )
+  const backgroundType = computed(() => themeSettings.value.backgroundType)
 
-  const lightBackgroundUrl = computed<string>(() => optString(themeOptions.value, 'lightBackgroundUrl', ''))
-  const darkBackgroundUrl = computed<string>(() => optString(themeOptions.value, 'darkBackgroundUrl', ''))
+  const lightBackgroundUrl = computed<string>(() => themeSettings.value.lightBackgroundUrl)
+  const darkBackgroundUrl = computed<string>(() => themeSettings.value.darkBackgroundUrl)
 
-  const backgroundBlur = computed<number>(() => {
-    const value = optNumber(themeOptions.value, 'backgroundBlur', 0)
-    return value >= 0 ? value : 0
-  })
-
-  const backgroundOverlay = computed<number>(() => {
-    const value = optNumber(themeOptions.value, 'backgroundOverlay', 0)
-    return value >= 0 && value <= 100 ? value : 0
-  })
-
-  const cardBlurRadius = computed<number>(() => {
-    const value = optNumber(themeOptions.value, 'cardBlurRadius', 12)
-    return value >= 0 ? value : 12
-  })
+  const backgroundBlur = computed<number>(() => themeSettings.value.backgroundBlur)
+  const backgroundOverlay = computed<number>(() => themeSettings.value.backgroundOverlay)
+  const cardBlurRadius = computed<number>(() => themeSettings.value.cardBlurRadius)
 
   const currentBackgroundUrl = computed<string>(() => (isDark.value ? darkBackgroundUrl.value : lightBackgroundUrl.value))
 
   return {
     loading,
     siteConfig,
-    themeOptions,
+    backendThemeOptions,
+    localThemeOverrides,
+    themeSettings,
     siteTitle,
     version,
     lastWorkersVersion,
@@ -427,17 +325,34 @@ const useAppStore = defineStore('app', () => {
     nodeSelectedGroup,
     nodeViewMode,
     defaultViewMode,
+    dataUpdateInterval,
+    enableRealtime,
     showAdminEntry,
+    hideSingleGroupTab,
+    showPingChartButton,
     fullWidth,
     maxPageWidth,
+    borderRadius,
+    fontFamily,
+    numberFontFamily,
     cardProgressLayout,
     cardSize,
     cardMinWidth,
     cardMetrics,
     showGeneralCards,
-    numberFontFamily,
+    tagsInSeparateRow,
+    uptimeTagWrap,
+    uptimeFormat,
+    lightCardContrast,
+    trafficSplitColor,
+    lightPrimaryColor,
+    lightPrimaryColorHover,
+    lightPrimaryColorPressed,
+    darkPrimaryColor,
+    darkPrimaryColorHover,
+    darkPrimaryColorPressed,
+    primaryColors,
     listViewColumns,
-    hideSingleGroupTab,
     listColumnWidths,
     listColumnGap,
     listColumnPadding,
@@ -445,12 +360,6 @@ const useAppStore = defineStore('app', () => {
     listRowHeight,
     listStatusStyle,
     listTagsStyle,
-    showPingChartButton,
-    tagsInSeparateRow,
-    uptimeTagWrap,
-    uptimeFormat,
-    lightCardContrast,
-    trafficSplitColor,
     byteDecimals,
     alertEnabled,
     alertType,
