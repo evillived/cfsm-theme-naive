@@ -152,6 +152,8 @@ const visibleMetrics = computed(() => new Set(appStore.cardMetrics))
 //
 // CFSM 的 `ping_ct/cu/cm/bd` 与 `loss_ct/cu/cm/bd` 是标量字段（三网详情开关只影响窗口数组），
 // 因此卡片可以直接展示当前延迟与丢包，无需依赖 `showThreeNetDetails`。
+// 其中**延迟用瞬时标量，丢包用近 30 分钟平均**（`loss_avg`，尚未取到时逐线回落标量）——
+// 标量只代表最近一轮探测，单轮抽风就会跳到 50%，读数会一直跳。口径见 `@/utils/latencyHelper`。
 
 /** 线路显示名，取站点配置的自定义名称（三网 + BGP + 自定义节点 1-4） */
 const latencyLineNames = computed(() => ({

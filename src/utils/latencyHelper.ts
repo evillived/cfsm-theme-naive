@@ -12,7 +12,7 @@
  */
 
 import type { LatencySet, LatencyValue, NodeData } from '@/stores/nodes'
-import type { LatencyWindowPoint, Server } from '@/types/cfsm'
+import type { HistoryHours, LatencyWindowPoint, Server } from '@/types/cfsm'
 import { TAG_COLOR_HEX_MAP } from '@/utils/tagHelper'
 
 /** 质量分级 */
@@ -25,6 +25,15 @@ export const LATENCY_FAIR_MS = 200
 /** 丢包分级阈值（%）：≤1 良好、≤10 一般、>10 较差 */
 export const LOSS_GOOD_PERCENT = 1
 export const LOSS_FAIR_PERCENT = 10
+
+/**
+ * 首页丢包展示的平均窗口（小时），`0.5` = 近 30 分钟。
+ *
+ * 卡片与列表展示的丢包用的是这段窗口内的**平均丢包率**，而不是后端那一列瞬时标量：
+ * 标量只代表最近一次探测轮次，单轮抽风就能跳到 50%，读数会不停跳。
+ * 窗口长度必须落在 `HistoryHours` 的合法档位里（见 `@/types/cfsm`）。
+ */
+export const LOSS_AVERAGE_HOURS: HistoryHours = 0.5
 
 /**
  * 线路键，覆盖 CFSM 的全部 8 条探测线路：
@@ -242,6 +251,65 @@ export function pickServerLineValue(
   return false
 }
 
+/**
+ * 把一段历史折算成「窗口内平均丢包」（逐线路取算术平均，保留 1 位小数）。
+ *
+ * 参与计算的只有**数值**样本：
+ * - `false`（未配置 / 该行没有这一列）跳过；
+ * - `null`（该轮未取到值）跳过 —— 后端对「整轮探测超时」给的是 `loss = 100`（数值），
+ *   所以超时轮次本身并不会被漏掉，跳过 `null` 不会让丢包率偏低。
+ *
+ * 某条线路在窗口内一个数值样本都没有时该线路返回 `false`，由读方决定回落到标量。
+ */
+export function averageLoss(rows: Partial<Server>[]): LatencySet {
+  const result: LatencySet = {
+    ct: false,
+    cu: false,
+    cm: false,
+    bd: false,
+    node1: false,
+    node2: false,
+    node3: false,
+    node4: false,
+  }
+
+  LATENCY_LINE_KEYS.forEach((key, index) => {
+    let sum = 0
+    let count = 0
+    for (const row of rows) {
+      const value = pickServerLineValue(row, 'loss', index)
+      if (typeof value === 'number') {
+        sum += value
+        count += 1
+      }
+    }
+    // 四舍五入到 0.1：与展示精度一致，也避免浮点尾巴让值看起来一直在抖
+    if (count > 0)
+      result[key] = Math.round((sum / count) * 10) / 10
+  })
+
+  return result
+}
+
+/**
+ * 用平均丢包覆盖标量，**逐线路**回落。
+ *
+ * 平均值为数值时用它；为 `false`（窗口内无样本，例如刚上线的机器）时保留原标量，
+ * 这样新机器不会因为「还没有历史」而整条丢包信息消失。
+ */
+function preferAverageLoss(base: LatencySet, average: LatencySet | null): LatencySet {
+  if (!average)
+    return base
+
+  const merged: LatencySet = { ...base }
+  for (const key of LATENCY_LINE_KEYS) {
+    const value = average[key]
+    if (typeof value === 'number')
+      merged[key] = value
+  }
+  return merged
+}
+
 /** 收集「已配置」的线路明细（`false` 的线路直接跳过） */
 export function collectLatencyLines(
   ping: LatencySet,
@@ -287,12 +355,16 @@ export function collectLatencyLines(
  * 汇总节点当前的延迟与丢包。
  *
  * 典型使用场景：`hash` 只在节点数据变化时重算，避免在模板里重复遍历。
+ *
+ * **丢包取「近 `LOSS_AVERAGE_HOURS` 平均」（`node.loss_avg`），不是后端那一列瞬时标量**：
+ * 标量是最近一轮的读数，单轮抽风就会跳到 50%。尚未取到平均值时逐线回落 `node.loss_rate`。
+ * 延迟仍用 `node.ping_latency` 的瞬时值，不做平均。
  */
 export function summarizeLatency(
-  node: Pick<NodeData, 'ping_latency' | 'loss_rate'>,
+  node: Pick<NodeData, 'ping_latency' | 'loss_rate' | 'loss_avg'>,
   names: LatencyLineNames = {},
 ): LatencySummary {
-  const lines = collectLatencyLines(node.ping_latency, node.loss_rate, names)
+  const lines = collectLatencyLines(node.ping_latency, preferAverageLoss(node.loss_rate, node.loss_avg), names)
 
   const latencies = lines
     .map(line => line.latency)

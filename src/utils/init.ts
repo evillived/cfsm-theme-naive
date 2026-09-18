@@ -6,9 +6,11 @@
  * 2. 站点启用全局 Turnstile 且当前未通过验证时，先取得一次性 token，
  *    换取可复用 1 小时的 `turnstile_verified` 凭证
  * 3. `GET /api/servers`（逐 apiBase）→ 服务器列表与统计
- * 4. `/api/ws` 订阅增量推送：列表页 `subscribe=all`（并提交 ids），详情页 `subscribe=<id>`
+ * 4. `GET /api/history/all`（逐服务器）→ 折算「近 30 分钟平均丢包」，供首页卡片与列表使用
+ * 5. `/api/ws` 订阅增量推送：列表页 `subscribe=all`（并提交 ids），详情页 `subscribe=<id>`
  */
 
+import type { LatencySet } from '@/stores/nodes'
 import type { SiteConfig } from '@/types/cfsm'
 import type { CfsmAuth } from '@/utils/cfsmApi'
 import type { CfsmSubscribe } from '@/utils/cfsmWs'
@@ -16,10 +18,22 @@ import { useAppStore } from '@/stores/app'
 import { useNodesStore } from '@/stores/nodes'
 import { CfsmApiError, getSharedApi } from '@/utils/cfsmApi'
 import { CfsmWsManager } from '@/utils/cfsmWs'
+import { averageLoss, LOSS_AVERAGE_HOURS } from '@/utils/latencyHelper'
 import { requestTurnstileToken } from '@/utils/turnstile'
 
 /** 在线状态兜底刷新间隔（毫秒） */
 const ONLINE_REFRESH_INTERVAL_MS = 60_000
+
+/**
+ * 平均丢包的重新拉取间隔（毫秒）。
+ *
+ * 展示的是 30 分钟窗口的平均值，本身变化很慢，5 分钟刷新一次足够，
+ * 也避免了每台机器一条历史请求被反复打出（窗口内的样本由后端持续写入）。
+ */
+const LOSS_AVERAGE_REFRESH_MS = 5 * 60 * 1000
+
+/** 平均丢包的并发上限：一次最多同时拉几台机器的历史 */
+const LOSS_AVERAGE_CONCURRENCY = 4
 
 /** 初始化状态管理 */
 class InitManager {
@@ -29,6 +43,8 @@ class InitManager {
 
   private ws: CfsmWsManager | null = null
   private onlineTimer: ReturnType<typeof setInterval> | null = null
+  private lossTimer: ReturnType<typeof setInterval> | null = null
+  private lossLoading = false
   private visibilityHandler: (() => void) | null = null
 
   private isInitialized = false
@@ -69,6 +85,7 @@ class InitManager {
       this.startRealtime(this.allSubscribe())
       this.startOnlineTimer()
       this.observeVisibility()
+      void this.fetchLossAverages()
 
       this.isInitialized = true
     }
@@ -151,14 +168,62 @@ class InitManager {
       throw firstError ?? new Error('无法获取服务器列表')
   }
 
+  /**
+   * 拉取「近 `LOSS_AVERAGE_HOURS` 平均丢包」，写入 nodes store 供首页卡片与列表使用。
+   *
+   * 为什么需要单独拉历史：`/api/servers` 只给**最近一轮**的丢包标量，单轮抽风就能跳到 50%，
+   * 卡片读数会一直跳；历史行里才有窗口内的全部样本。平均窗口是 30 分钟，所以按
+   * `LOSS_AVERAGE_REFRESH_MS` 重新拉即可，不必更频繁。
+   *
+   * 只拉「配了线路」且「已过期」的机器；失败静默（丢包显示回落标量，不影响其它功能）。
+   */
+  private async fetchLossAverages(): Promise<void> {
+    if (this.lossLoading || document.visibilityState === 'hidden')
+      return
+
+    const targets = this.nodesStore.lossAverageTargets(LOSS_AVERAGE_REFRESH_MS)
+    if (targets.length === 0)
+      return
+
+    this.lossLoading = true
+    try {
+      const auth = this.auth()
+      const collected: Record<string, LatencySet> = {}
+
+      for (let i = 0; i < targets.length; i += LOSS_AVERAGE_CONCURRENCY) {
+        const batch = targets.slice(i, i + LOSS_AVERAGE_CONCURRENCY)
+        const results = await Promise.allSettled(
+          batch.map(target => this.api.getHistory(target.apiBase, target.uuid, LOSS_AVERAGE_HOURS, auth)),
+        )
+        results.forEach((result, index) => {
+          const target = batch[index]
+          if (target && result.status === 'fulfilled')
+            collected[target.uuid] = averageLoss(result.value)
+        })
+      }
+
+      this.nodesStore.applyLossAverage(collected)
+    }
+    catch (error) {
+      // 平均值只是展示增强：失败就继续用标量，不弹错误也不进连接错误状态
+      console.warn('[InitManager] 平均丢包拉取失败，继续使用标量:', error)
+    }
+    finally {
+      this.lossLoading = false
+    }
+  }
+
   /** 页面重新可见时补一次 REST 数据（WebSocket 由 CfsmWsManager 自行恢复） */
   private observeVisibility(): void {
     if (this.visibilityHandler)
       return
 
     this.visibilityHandler = () => {
-      if (document.visibilityState === 'visible' && this.isInitialized)
-        void this.refreshServers()
+      if (document.visibilityState !== 'visible' || !this.isInitialized)
+        return
+      void this.refreshServers()
+      // 标签页在后台待久了，平均丢包可能已过期（过期判断在 store 里，没过期不会发请求）
+      void this.fetchLossAverages()
     }
     document.addEventListener('visibilitychange', this.visibilityHandler)
   }
@@ -170,6 +235,9 @@ class InitManager {
       this.pauseRealtime()
       return
     }
+
+    // 平均丢包是定时重新拉取的，关掉实时推送时一并停掉（与「省额度」的意图一致）
+    this.startLossTimer()
 
     if (!this.ws) {
       this.ws = new CfsmWsManager({
@@ -217,6 +285,22 @@ class InitManager {
     }, ONLINE_REFRESH_INTERVAL_MS)
   }
 
+  /** 定时刷新平均丢包（30 分钟窗口变化很慢，5 分钟一次足够） */
+  private startLossTimer(): void {
+    if (this.lossTimer)
+      return
+    this.lossTimer = setInterval(() => {
+      void this.fetchLossAverages()
+    }, LOSS_AVERAGE_REFRESH_MS)
+  }
+
+  private stopLossTimer(): void {
+    if (!this.lossTimer)
+      return
+    clearInterval(this.lossTimer)
+    this.lossTimer = null
+  }
+
   /** 详情页：切换为单服务器订阅，降低后端推送量与额度消耗 */
   subscribeServer(serverId: string): void {
     this.startRealtime({ scope: 'server', serverId })
@@ -229,6 +313,7 @@ class InitManager {
 
   /** 断开实时推送（关闭「启用实时推送」时调用） */
   pauseRealtime(): void {
+    this.stopLossTimer()
     if (!this.ws)
       return
     this.ws.destroy()
@@ -273,6 +358,7 @@ class InitManager {
       clearInterval(this.onlineTimer)
       this.onlineTimer = null
     }
+    this.stopLossTimer()
     if (this.visibilityHandler) {
       document.removeEventListener('visibilitychange', this.visibilityHandler)
       this.visibilityHandler = null

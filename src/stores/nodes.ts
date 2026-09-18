@@ -140,7 +140,13 @@ export interface NodeData {
   /** 近 `latency_window.hours` 小时的丢包窗口，仅列表接口返回 */
   loss_window: LatencyWindowPoint[]
   ping_latency: LatencySet
+  /** 后端标量：最近一次探测轮次的丢包率（写入口径的来源） */
   loss_rate: LatencySet
+  /**
+   * 近 `LOSS_AVERAGE_HOURS` 的平均丢包率，由 `GET /api/history/all` 折算（见 `@/utils/latencyHelper`）。
+   * `null` = 尚未取到，读方逐线路回落到 `loss_rate`。
+   */
+  loss_avg: LatencySet | null
   // ===== 已废弃字段（CFSM 无对应数据，保留以便组件逐步清理） =====
   created_at: string
   updated_at: string
@@ -302,7 +308,7 @@ function hasLatency(patch: Partial<Server>, kind: 'ping' | 'loss'): boolean {
 }
 
 /** 把 CFSM Server 映射为节点 view model */
-function adaptServer(server: Server, apiBase: string): NodeData {
+function adaptServer(server: Server, apiBase: string, lossAvg: LatencySet | null = null): NodeData {
   const [load1, load5, load15] = parseLoadAvg(server.load_avg)
   const gpu = parseGpuInfo(server.gpu_info)
   const lastUpdated = server.last_updated || server.timestamp || Date.now()
@@ -368,6 +374,7 @@ function adaptServer(server: Server, apiBase: string): NodeData {
     loss_window: server.loss ?? [],
     ping_latency: latencySet(server, 'ping'),
     loss_rate: latencySet(server, 'loss'),
+    loss_avg: lossAvg,
     created_at: '',
     updated_at: '',
   }
@@ -458,6 +465,11 @@ const useNodesStore = defineStore('nodes', () => {
   const regionStatsByBase = ref<Record<string, Record<string, number>>>({})
   const sysConfigByBase = ref<Record<string, SysConfig>>({})
 
+  // 近 30 分钟平均丢包：按 uuid 缓存，`GET /api/servers` 重建节点后要重新贴回去，
+  // 因此不能只存在 NodeData 上。fetchedAt 用于判断是否过期，避免频繁重复拉取。
+  const lossAvgByUuid = ref<Record<string, LatencySet>>({})
+  const lossAvgFetchedAt = ref<Record<string, number>>({})
+
   // ===== 计算属性 =====
   const onlineCount = computed(() => nodes.value.filter(node => node.online).length)
   const totalCount = computed(() => nodes.value.length)
@@ -525,6 +537,43 @@ const useNodesStore = defineStore('nodes', () => {
 
   // ===== 方法 =====
 
+  /**
+   * 需要（重新）拉取「近 30 分钟平均丢包」的服务器。
+   *
+   * 只挑真正配了延迟 / 丢包线路的机器：没配的机器历史行里也没有这一列，拉取纯属浪费。
+   * `staleMs` 内取过的视为新鲜，避免在首页与详情页之间来回切换时重复请求。
+   */
+  function lossAverageTargets(staleMs: number): { uuid: string, apiBase: string }[] {
+    const now = Date.now()
+    return nodes.value
+      .filter((node) => {
+        const values = [...Object.values(node.ping_latency), ...Object.values(node.loss_rate)]
+        if (!values.some(value => value !== false))
+          return false
+        return now - (lossAvgFetchedAt.value[node.uuid] ?? 0) >= staleMs
+      })
+      .map(node => ({ uuid: node.uuid, apiBase: node.apiBase }))
+  }
+
+  /** 写入平均丢包：既缓存下来（供列表重建时回填），也立刻刷新已在渲染的节点 */
+  function applyLossAverage(entries: Record<string, LatencySet>, fetchedAt = Date.now()): void {
+    const ids = Object.keys(entries)
+    if (ids.length === 0)
+      return
+
+    lossAvgByUuid.value = { ...lossAvgByUuid.value, ...entries }
+
+    const nextFetchedAt = { ...lossAvgFetchedAt.value }
+    for (const id of ids)
+      nextFetchedAt[id] = fetchedAt
+    lossAvgFetchedAt.value = nextFetchedAt
+
+    nodes.value = nodes.value.map((node) => {
+      const average = entries[node.uuid]
+      return average ? { ...node, loss_avg: average } : node
+    })
+  }
+
   /** 某个后端当前应有的全部服务器 id（用于 WebSocket subscribe 过滤） */
   function resolveIdsForBase(apiBase: string): string[] {
     return nodes.value.filter(node => node.apiBase === apiBase).map(node => node.uuid)
@@ -540,7 +589,8 @@ const useNodesStore = defineStore('nodes', () => {
 
   /** 应用某个后端的服务器列表（`GET /api/servers`） */
   function applyListResponse(apiBase: string, response: ServersResponse): void {
-    const incoming = response.servers.map(server => adaptServer(server, apiBase))
+    const incoming = response.servers.map(server =>
+      adaptServer(server, apiBase, lossAvgByUuid.value[server.id] ?? null))
     const pending = new Map(incoming.map(node => [node.uuid, node]))
 
     const next: NodeData[] = []
@@ -570,7 +620,7 @@ const useNodesStore = defineStore('nodes', () => {
    * 若该服务器不在列表中（例如详情页直接进入），则插入。
    */
   function applyServerDetail(apiBase: string, server: Server): void {
-    const adapted = adaptServer(server, apiBase)
+    const adapted = adaptServer(server, apiBase, lossAvgByUuid.value[server.id] ?? null)
     const index = nodes.value.findIndex(node => node.uuid === adapted.uuid)
     if (index === -1) {
       nodes.value = sortNodes([...nodes.value, adapted])
@@ -612,6 +662,8 @@ const useNodesStore = defineStore('nodes', () => {
     statsByBase.value = {}
     regionStatsByBase.value = {}
     sysConfigByBase.value = {}
+    lossAvgByUuid.value = {}
+    lossAvgFetchedAt.value = {}
   }
 
   return {
@@ -632,6 +684,8 @@ const useNodesStore = defineStore('nodes', () => {
     resolveIdsForBase,
     findById,
     findByUuid,
+    lossAverageTargets,
+    applyLossAverage,
     applyListResponse,
     applyServerDetail,
     applySample,

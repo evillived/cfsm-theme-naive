@@ -85,6 +85,11 @@ CFSM Naive 是一个安静的运维看板。保留 Naive UI 克制的绿色强�
   `pickServerLineValue`、汇总走 `summarizeLatency`、分级与配色走 `latencyBadge` / `lossBadge`。
   概览取**最差线路**而非最优，避免用一个好看的数值掩盖单条线路劣化；只要有线路超时就优先显示「超时」。
   探测超时在图表中是**必须保留的断点**，不允许被 EWMA 或线性插值填补成看似正常的延迟值。
+- **首页与列表的丢包取「近 30 分钟平均」，延迟保持瞬时**：`/api/servers` 的 `loss_*` 是最近一轮的
+  读数（单轮掉包即跳到 50%），因此 `init.ts` 逐台拉 30 分钟历史并由 `averageLoss()` 折算成
+  `NodeData.loss_avg`，`summarizeLatency` 优先用它、逐线路回落标量。平均值只用于**丢包**；
+  延迟不做平滑，避免掩盖瞬时劣化。窗口常量 `LOSS_AVERAGE_HOURS`，刷新节流 5 分钟且跟随
+  「启用实时推送」开关。
 - **延迟曲线取真实历史**：`/api/history/all` 的历史行本身携带 `ping_ct/cu/cm/bd` 与
   `loss_ct/cu/cm/bd`，因此 `PingChart` 直接按所选档位（1 / 6 / 12 / 24 小时）拉取历史，
   一行即一个图表点（无需再按任务分桶归并），丢包率也取自实测 `loss_*` 而非超时点占比推算。

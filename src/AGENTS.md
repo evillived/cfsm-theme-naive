@@ -56,6 +56,7 @@ CFSM 的链路是「REST 拉取 + WebSocket 推送」，与移植前的 Komari R
 - 延迟/丢包取值语义：`false` 表示未配置或未取样（不显示）、`null` 表示探测超时、数值 `0`（含 0% 丢包）是有效数据必须显示。
 - **禁止用 `?? false` / `|| false` 兜底延迟或丢包取值**：`null ?? false` 会把「探测超时」降级成「未配置」并被直接丢弃，导致超时点在图表中消失、丢包率恒为 0。取窗口点必须走 `latencyHelper` 的 `pickLineValue`，收集线路走 `collectLatencyLines`。
 - 展示口径统一走 `latencyHelper`：分级阈值（延迟 `<100` / `<200` / `≥200` ms，丢包 `≤1%` / `≤10%` / `>10%`）、颜色、格式化文本都从该模块取，不要在组件里另写一套。
+- **首页卡片与列表展示的丢包是「近 30 分钟平均」，延迟仍是瞬时值**：`/api/servers` 给的 `loss_*` 只代表最近一次探测轮次，单轮抽风就能跳到 50%，所以 `init.ts` 会逐台拉 `GET /api/history/all?hours=0.5`（`LOSS_AVERAGE_HOURS`）经 `averageLoss()` 折算成 `NodeData.loss_avg`，`summarizeLatency` 优先用它、**逐线路**回落到 `loss_rate` 标量（新机器还没有窗口样本时不至于整条消失）。刷新节奏：首屏一次 + 页面重新可见 + 「启用实时推送」开启时每 5 分钟一次（`LOSS_AVERAGE_REFRESH_MS`），只拉「配了线路且已过期」的机器，失败静默。延迟不做平均（用户明确要求）。
 - 延迟/丢包的渲染点：`PingChart` 的区间统计卡片与趋势曲线（四档 1/6/12/24 小时）、`NodeCard` 的延迟行（三网逐线**内联**并排，形如 `电信 · 55ms | 联通 · 44ms`，延迟数字按**丢包率**着色，丢包数字走悬浮提示）、`NodeList` 的 `latency` 列（概览取最差线路，逐线明细在 tooltip 中展开，需 `showThreeNetDetails` 开启）。
 - 卡片延迟数字的着色以丢包率为准（`latencyColorByLoss`）：丢包未配置时才退回延迟自身分级。
 - 图表里 `null`（超时）是断点，**不得被 EWMA 或线性插值填补**；`PingChart` 的 `chartData` 每轮变换后都会按 `timeoutCells`（`行下标:线路id`）还原超时点。
