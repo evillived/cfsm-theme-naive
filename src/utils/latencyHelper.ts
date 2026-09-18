@@ -131,7 +131,10 @@ export function gradeHex(grade: QualityGrade): string {
     case 'good':
       return TAG_COLOR_HEX_MAP.green
     case 'fair':
-      return TAG_COLOR_HEX_MAP.orange
+      // 用 amber 而不是 orange：orange(#F97316) 与 poor 的 tomato(#E54D2E) 明度几乎相同
+      // （33% vs 30%），在浅色背景与毛玻璃卡片上几乎分不出红橙，读数容易误判成「差」。
+      // amber(#F5B21A) 明度约 51%，与红拉开明显距离。
+      return TAG_COLOR_HEX_MAP.amber
     case 'poor':
       return TAG_COLOR_HEX_MAP.tomato
     default:

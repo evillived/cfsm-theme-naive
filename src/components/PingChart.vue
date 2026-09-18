@@ -66,8 +66,8 @@ const PING_RANGES: Array<{ label: string, hours: HistoryHours }> = [
   { label: '24 小时', hours: 24 },
 ]
 
-/** 当前选中的时间范围（小时）；默认 6 小时 */
-const selectedHours = ref<HistoryHours>(6)
+/** 当前选中的时间范围（小时）；默认 1 小时（打开详情页先看最近的实时质量） */
+const selectedHours = ref<HistoryHours>(1)
 
 /**
  * CFSM 历史行同样携带 `ping_ct/cu/cm/bd` 与 `loss_ct/cu/cm/bd`，
