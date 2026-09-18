@@ -120,6 +120,14 @@ export const BACKGROUND_TYPE_OPTIONS: { value: BackgroundType, label: string }[]
   { value: 'video', label: '视频' },
 ]
 
+/**
+ * 移动端断点（px）—— 视口宽度 **≤ 该值** 时按移动端处理。
+ *
+ * 与全站媒体查询保持一致（`HomeView` / `PingChart` 都以 640px 为界，UnoCSS `sm` 同为 640px）。
+ * 页面容器的最大宽度据此在 `maxPageWidth` 与 `maxPageWidthMobile` 之间切换。
+ */
+export const MOBILE_BREAKPOINT_PX = 640
+
 /** 解析后的设置：数组 / 对象已是原生形态，可直接被组件消费 */
 export interface ResolvedThemeSettings {
   // ===== 运行与访问 =====
@@ -158,7 +166,10 @@ export interface ResolvedThemeSettings {
 
   // ===== 页面与排版 =====
   fullWidth: boolean
+  /** PC 端最大页面宽度（视口 > 640px 时生效） */
   maxPageWidth: string
+  /** 移动端最大页面宽度（视口 ≤ 640px 时生效） */
+  maxPageWidthMobile: string
   borderRadius: string
   fontFamily: string
   numberFontFamily: string
@@ -259,6 +270,9 @@ export const DEFAULT_THEME_SETTINGS: ResolvedThemeSettings = {
 
   fullWidth: false,
   maxPageWidth: '1800px',
+  // 移动端默认不设限（= 占满可用宽度）：与拆分前的实际表现一致，
+  // 因为原来的 1800px 在 ≤640px 的视口上本来就不会产生约束
+  maxPageWidthMobile: '100%',
   borderRadius: '3px',
   fontFamily: '"MiSans VF", sans-serif',
   numberFontFamily: '"TCloud Number VF", "MiSans VF", sans-serif',
@@ -468,6 +482,7 @@ export function normalizeThemeSettings(
 
     fullWidth: pickBool(raw, 'fullWidth', d.fullWidth),
     maxPageWidth: pickString(raw, 'maxPageWidth', d.maxPageWidth),
+    maxPageWidthMobile: pickString(raw, 'maxPageWidthMobile', d.maxPageWidthMobile),
     borderRadius: pickString(raw, 'borderRadius', d.borderRadius),
     fontFamily: pickString(raw, 'fontFamily', d.fontFamily),
     numberFontFamily: pickString(raw, 'numberFontFamily', d.numberFontFamily),
@@ -674,7 +689,20 @@ export const THEME_SETTING_GROUPS: ThemeSettingGroup[] = [
     title: '页面与排版',
     items: [
       { key: 'fullWidth', kind: 'switch', label: '占满屏幕宽度', help: '启用后页面内容占满整个屏幕宽度，忽略最大宽度限制。' },
-      { key: 'maxPageWidth', kind: 'text', label: '最大页面宽度', help: '如 1800px、100rem。', placeholder: '1800px' },
+      {
+        key: 'maxPageWidth',
+        kind: 'text',
+        label: 'PC 端最大页面宽度',
+        help: `视口宽度大于 ${MOBILE_BREAKPOINT_PX}px 时生效；如 1800px、100rem。`,
+        placeholder: '1800px',
+      },
+      {
+        key: 'maxPageWidthMobile',
+        kind: 'text',
+        label: '移动端最大页面宽度',
+        help: `视口宽度不超过 ${MOBILE_BREAKPOINT_PX}px 时生效；如 100%（占满）、480px（收窄成窄栏）。`,
+        placeholder: '100%',
+      },
       { key: 'borderRadius', kind: 'text', label: '圆角大小', help: '全局圆角，如 3px、0.5rem。', placeholder: '3px' },
       { key: 'fontFamily', kind: 'text', label: '字体', help: '全局字体栈，多个字体用英文逗号分隔。' },
       { key: 'numberFontFamily', kind: 'text', label: '数字字体', help: '数值展示专用字体（CPU、内存、流量等）。' },

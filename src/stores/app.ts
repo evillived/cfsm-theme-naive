@@ -199,6 +199,8 @@ const useAppStore = defineStore('app', () => {
 
   const maxPageWidth = computed<string>(() => themeSettings.value.maxPageWidth)
 
+  const maxPageWidthMobile = computed<string>(() => themeSettings.value.maxPageWidthMobile)
+
   const borderRadius = computed<string>(() => themeSettings.value.borderRadius)
 
   const fontFamily = computed<string>(() => themeSettings.value.fontFamily)
@@ -332,6 +334,7 @@ const useAppStore = defineStore('app', () => {
     showPingChartButton,
     fullWidth,
     maxPageWidth,
+    maxPageWidthMobile,
     borderRadius,
     fontFamily,
     numberFontFamily,

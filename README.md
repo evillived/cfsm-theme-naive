@@ -104,7 +104,8 @@ CFSM 的第三方主题**不能**调用管理端接口，`GET /api/config` 返�
 | `defaultViewMode`                                            | `card` \| `list`                         | `card`                                        | 访客首次打开时使用的节点视图                |
 | `showAdminEntry`                                             | boolean                                  | `true`                                        | 是否在页头显示「管理后台」入口              |
 | `fullWidth`                                                  | boolean                                  | `false`                                       | 内容是否占满屏幕宽度                        |
-| `maxPageWidth`                                               | string                                   | `1800px`                                      | 内容最大宽度                                |
+| `maxPageWidth`                                               | string                                   | `1800px`                                      | PC 端内容最大宽度（视口 > 640px）           |
+| `maxPageWidthMobile`                                         | string                                   | `100%`                                        | 移动端内容最大宽度（视口 ≤ 640px）          |
 | `cardSize`                                                   | `compact` \| `comfortable` \| `spacious` | `comfortable`                                 | 节点卡片尺寸                                |
 | `cardMinWidth`                                               | number                                   | `340`                                         | 卡片自动分栏的最小宽度（280–520）           |
 | `cardMetrics`                                                | JSON 字符串数组                          | `["cpu","memory","disk","traffic"]`           | 卡片展示指标                                |

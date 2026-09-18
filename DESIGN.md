@@ -58,9 +58,13 @@ CFSM Naive 是一个安静的运维看板。保留 Naive UI 克制的绿色强�
 
 ## 7. Responsive behavior
 
-- Mobile：单列卡片、纵向堆叠的工具栏、紧凑的总览行。
+- 断点统一取 **640px**（`MOBILE_BREAKPOINT_PX`），与 UnoCSS `sm` 及各组件媒体查询一致。
+- Mobile：单列卡片、纵向堆叠的工具栏、紧凑的总览行；内容宽度受 `maxPageWidthMobile` 约束
+  （默认 `100%`，即不做限制）。
 - Tablet：按配置的最小卡片宽度 auto-fill。
 - Desktop：总览与节点卡片在 `maxPageWidth` 内扩展；信息密度由主题配置控制。
+- 页面容器宽度由 `usePageContainer` 统一给出，页头 / 内容区 / 页脚共用同一份判定，
+  避免三处各自维护阈值而在临界视口上错位。
 
 ## 8. Architecture after the port
 

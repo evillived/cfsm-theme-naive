@@ -46,6 +46,7 @@ CFSM 的链路是「REST 拉取 + WebSocket 推送」，与移植前的 Komari R
 ## Components
 
 - 组件只渲染 UI，数据来自 store 或 `@/utils/*`。
+- **页面容器宽度统一走 `@/composables/usePageContainer`**：`App.vue` 的内容区、`Header.vue`、`Footer.vue` 三处容器共用同一份 `containerStyle`，按视口在 `maxPageWidth`（> 640px）与 `maxPageWidthMobile`（≤ 640px）之间切换，断点常量是 `MOBILE_BREAKPOINT_PX`。新增容器时不要自己写一份 `maxWidth` + 媒体查询，否则页头与内容区会在临界宽度上错位。
 - `NodeCard.vue`、`NodeList.vue`、`NodeGeneralCards.vue`、`LoadChart.vue`、`PingChart.vue` 保持展示聚焦，并继续用 `defineAsyncComponent` 懒加载。
 - `ThemeSettings.vue` 是主题设置页：按 `THEME_SETTING_GROUPS` 渲染分组与控件，草稿态与「保存到本机 / 复制配置 JSON」的落盘逻辑都在这里。**不要在主题内直接写后端**：`POST /api/theme_options` 只认 `Authorization: Bearer <JWT>`，而 `cfsm_auth` Cookie 是 HttpOnly 且仅用于 WebSocket 鉴权，主题拿不到 JWT；站点级预设统一走「复制 JSON → 粘贴到后台」。
 - `LoadChart.vue` 数据源为 `GET /api/history/all`；查询时长只能取 `0.167 / 0.5 / 1 / 6 / 12 / 24 / 48 / 96 / 168` 小时（最长 7 天），未登录超过 24 小时会返回 401。
@@ -58,6 +59,8 @@ CFSM 的链路是「REST 拉取 + WebSocket 推送」，与移植前的 Komari R
 - 延迟/丢包的渲染点：`PingChart` 的区间统计卡片与趋势曲线（四档 1/6/12/24 小时）、`NodeCard` 的延迟行（三网逐线**内联**并排，形如 `电信 · 55ms | 联通 · 44ms`，延迟数字按**丢包率**着色，丢包数字走悬浮提示）、`NodeList` 的 `latency` 列（概览取最差线路，逐线明细在 tooltip 中展开，需 `showThreeNetDetails` 开启）。
 - 卡片延迟数字的着色以丢包率为准（`latencyColorByLoss`）：丢包未配置时才退回延迟自身分级。
 - 图表里 `null`（超时）是断点，**不得被 EWMA 或线性插值填补**；`PingChart` 的 `chartData` 每轮变换后都会按 `timeoutCells`（`行下标:线路id`）还原超时点。
+- **不要把内容整体包进 `NSpin` 后又依赖 Naive 的 CSS 变量**：naive-ui 的 spin 主题把 `--n-color` 与 `--n-text-color` **都设为主色**（`spin/styles/light`：`color` / `textColor` 默认取 `primaryColor`），会顺着继承污染整个子树；而 NSpin 不定义 `--n-text-color-1/2/3`，导致 `var(--n-text-color-N)` 整条声明失效、回落到主色。后果：玻璃卡片（用 `var(--n-color)`）被染成主色、正文变主色。`PingChart` 的解法是在 `content-class` 上挂自有类名，用 `:deep(...)` + `!important`（NSpin 的变量是行内样式，普通规则盖不过）把这几档变量还原成 `--ping-text-*` / `--ping-surface`。新增用 `NSpin` 包裹的组件时要照此处理。
+- 组件内自有的 CSS 变量统一用 `--ping-*` / `--load-*` 之类前缀，并在根元素上从 `useThemeVars()` 取值注入；**不要在 `NSpin` 子树里依赖 `--n-*` 的继承值**。
 
 ## Naive UI globals
 

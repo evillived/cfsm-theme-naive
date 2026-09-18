@@ -1,27 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, watch } from 'vue'
+import { onMounted, onUnmounted, watch } from 'vue'
 import Background from '@/components/Background.vue'
 import Footer from '@/components/Footer.vue'
 import Header from '@/components/Header.vue'
 import LoadingCover from '@/components/LoadingCover.vue'
 import Provider from '@/components/Provider.vue'
+import { usePageContainer } from '@/composables/usePageContainer'
 import { useAppStore } from '@/stores/app'
 import { listenStorageSync, useThemeSettingsStore } from '@/stores/themeSettings'
 import { applyRealtimeSetting, destroyInitManager, initApp } from '@/utils/init'
 
 const appStore = useAppStore()
 const themeSettingsStore = useThemeSettingsStore()
-
-// 计算页面容器的样式
-const pageContainerStyle = computed(() => {
-  if (appStore.fullWidth) {
-    return {}
-  }
-  return {
-    maxWidth: appStore.maxPageWidth,
-    marginInline: 'auto',
-  }
-})
+// 页面容器宽度按视口在 PC / 移动端两套最大宽度之间切换
+const { containerStyle: pageContainerStyle } = usePageContainer()
 
 // 「启用实时推送」设置变化时立即生效，无需刷新页面
 watch(

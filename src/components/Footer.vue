@@ -2,6 +2,7 @@
 import { NLayoutFooter, NText } from 'naive-ui'
 import { computed } from 'vue'
 import { useGlassSurface } from '@/composables/useGlassSurface'
+import { usePageContainer } from '@/composables/usePageContainer'
 import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
@@ -11,12 +12,8 @@ const { glassSurfaceStyle, isGlassEnabled } = useGlassSurface()
 const buildVersion = __BUILD_VERSION__
 const buildGitHash = __BUILD_GIT_HASH__
 
-// 计算页面容器的样式
-const containerStyle = computed(() =>
-  appStore.fullWidth
-    ? {}
-    : { maxWidth: appStore.maxPageWidth, marginInline: 'auto' },
-)
+// 页面容器宽度按视口在 PC / 移动端两套最大宽度之间切换；与内容区共用同一份判定
+const { containerStyle } = usePageContainer()
 
 // 是否显示备案信息
 const showIcp = computed(() => appStore.icpEnabled && appStore.icpNumber)

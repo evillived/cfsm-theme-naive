@@ -625,6 +625,9 @@ onMounted(() => {
       '--ping-radius': themeVars.borderRadius,
       '--ping-surface': themeVars.cardColor,
       '--ping-surface-hover': themeVars.hoverColor,
+      '--ping-text-1': themeVars.textColor1,
+      '--ping-text-2': themeVars.textColor2,
+      '--ping-text-3': themeVars.textColor3,
     }"
   >
     <!-- 时间选择器（样式与负载图表保持一致：居中、无标题） -->
@@ -640,8 +643,8 @@ onMounted(() => {
       </NButton>
     </div>
 
-    <!-- 内容区域 -->
-    <NSpin :show="loading" content-class="flex flex-col gap-4">
+    <!-- 内容区域；content-class 上挂自有类名，用于隔离 NSpin 注入的主题变量（见样式区说明） -->
+    <NSpin :show="loading" content-class="ping-chart__content flex flex-col gap-4">
       <div v-if="error" class="text-red-500 py-8 text-center">
         {{ error }}
       </div>
@@ -727,10 +730,10 @@ onMounted(() => {
                 </NTooltip>
               </div>
               <!--
-                数字配色与 komari-theme-naive 对齐：延迟用主文本色，丢包/波动继承浅文本色，
-                不按分级着色。卡片在启用自定义背景时会套一层毛玻璃（背景色透过来），
-                再叠绿/橙分级色会与背景撞色、可读性变差。
-              -->
+                  数字配色与 komari-theme-naive 对齐：延迟用主文本色，丢包/波动继承浅文本色，
+                  不按分级着色。这几档颜色之所以必须是中性色，是因为卡片在启用自定义背景时
+                  会套一层毛玻璃（背景透过来），再叠绿/橙分级色会与背景撞色、可读性变差。
+                -->
               <div class="ping-task-card__metrics text-sm mt-1 flex gap-3 items-center" style="color: var(--n-text-color-3)">
                 <span
                   class="font-medium"
@@ -798,8 +801,32 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/*
+ * 隔离 NSpin 注入的主题变量。
+ *
+ * naive-ui 的 spin 主题把 `--n-color` 与 `--n-text-color` **都设为主色**
+ * （spin/styles/light：color / textColor 默认取 primaryColor）。这些变量会顺着继承污染整个子树：
+ *   1. 玻璃卡片 `.glass-surface-enabled` 用的是 `var(--n-color)` → 整张卡片被染成主色；
+ *   2. `.ping-task-card { color: var(--n-text-color) }` → 卡内所有文字也变成主色，绿底绿字。
+ * 另外 NSpin **不定义** `--n-text-color-1/2/3`，本组件里大量 `var(--n-text-color-N)` 声明因此
+ * 整条失效、回落到继承来的主色 —— 这也是「改了数字颜色却不生效」的原因。
+ *
+ * 在内容容器上把这几档变量还原为中性色即可。两个要点：
+ *   - 内容容器由 NSpin 渲染，**不带本组件的 scope 属性**，必须用 `:deep()` 才能命中；
+ *   - 必须 `!important`：NSpin 的变量是行内样式，普通规则的优先级盖不过它。
+ */
+:deep(.ping-chart__content) {
+  --n-color: var(--ping-surface) !important;
+  --n-text-color: var(--ping-text-1) !important;
+  --n-text-color-1: var(--ping-text-1) !important;
+  --n-text-color-2: var(--ping-text-2) !important;
+  --n-text-color-3: var(--ping-text-3) !important;
+}
+
 .ping-actions,
 .ping-trend-panel {
+  /* 显式给中性文本色：否则会继承 NSpin 注入的主色（见上方说明） */
+  color: var(--ping-text-1);
   border: 1px solid var(--ping-border);
   border-radius: var(--ping-radius);
   background: color-mix(in srgb, var(--ping-surface) 96%, var(--ping-surface-hover));
