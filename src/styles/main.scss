@@ -8,32 +8,39 @@
 }
 
 /**
- * 根画布兜底 + 过度滚动保护（移动端）
+ * 根画布兜底（移动端）
  *
- * 现象：手机上过度滚动时（iOS 橡皮筋回弹、Android 拉伸与下拉刷新），屏幕边缘会闪出
- * 一条白色半透明遮罩，松手回弹后消失。
+ * 现象：Android 端上滑滚动时，浏览器收起底部地址栏，地址栏原本那块区域会短暂留下一层
+ * 白色半透明遮罩，手指离开后才消失。
  *
- * 成因：过度滚动会把整个 WebView 连同固定定位层一起拖出边界，露出的区域由「根画布
- * 背景」填充。而启用自定义背景时 Provider 会把 body 背景置为 transparent（必须如此，
- * 否则 body 的不透明背景会盖住 z-index:-1 的背景层），html 自身又没有背景
- * → 画布回落到浏览器默认的白色，拖动过程中露出白色。
+ * 成因：地址栏收起后可见区域立刻变大，但固定定位层的重新布局被推迟到滚动结束；而启用
+ * 背景时 Provider 会把 body 置为 transparent（必须如此，否则 body 的不透明背景会盖住
+ * z-index:-1 的背景层），html 自身又没有背景 → 这块新露出的区域只能由「根画布背景」填充，
+ * 回落到浏览器默认的白色。主修复见 components/Background.vue（背景层向下多铺一段 + 取最大
+ * 视口高度，不再依赖这次被延迟的重布局）；
  *
- * 处理：① html 给一个与页面背景同色系的兜底色 —— html 的背景直接充当画布背景，不会再
- *          从 body 传播，因此不会挡住背景层（Provider 会按当前模式与背景开关覆盖它）；
- *       ② 关闭根滚动容器的过度滚动，从源头避免页面被拖出边界。
+ * 这里的兜底色是第二道保险：html 的背景直接充当画布背景（不会再从 body 传播，因此不会
+ * 挡住背景层，Provider 会按当前模式与背景开关覆盖它），任何瞬时无绘制的区域也只是同色系
+ * 而非刺眼的白色。
  */
 html {
   background-color: #f5f7fa;
-  overscroll-behavior: none;
 }
 
 html.dark {
   background-color: #1a1a2e;
 }
 
-body {
-  overscroll-behavior: none;
-}
+// 上一版（本日首次修复）为「抑制过度滚动」加的两条规则已按约定注释回退：
+// 本次现象源于浏览器收起地址栏带来的视口变化，属于正常滚动而非过度滚动，这两条与它无关，
+// 且会连带禁用浏览器原生下拉刷新（需求外）。若确实需要抑制过度滚动，取消注释即可。
+// html {
+//   overscroll-behavior: none;
+// }
+//
+// body {
+//   overscroll-behavior: none;
+// }
 
 .glass-surface-enabled {
   background-color: color-mix(in srgb, var(--n-color) 68%, transparent) !important;

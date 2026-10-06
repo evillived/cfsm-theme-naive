@@ -122,19 +122,19 @@ watch(
   { immediate: true },
 )
 
-// 当启用自定义背景时，设置 body 背景透明
+// 当启用背景时，设置 body 背景透明，并给根元素一层兜底色
 watch(
   [() => appStore.backgroundEnabled, isDark],
   ([enabled, dark]) => {
     const body = document.body
-    // 根画布兜底：过度滚动（iOS 橡皮筋回弹 / Android 拉伸、下拉刷新）露出的区域取的是
-    // 画布背景。body 在启用自定义背景时被置为透明，画布就会回落到浏览器默认的白色，
-    // 移动端拖动时闪出白色遮罩 —— 所以根元素必须自己有一层底色（见 styles/main.scss）
+    // 画布兜底：启用背景时 body 被置为 transparent（否则会盖住 z-index:-1 的背景层），
+    // 画布只能由 html 自己兜。移动端浏览器收起地址栏时可见区域会先变大、固定层随后才
+    // 重布局，以及过度滚动拉出边界时，露出的都是这层画布背景 —— 取与背景同色系的颜色，
+    // 避免闪出刺眼的白色（主修复见 Background.vue 的 100lvh、styles/main.scss）
     const root = document.documentElement
     if (enabled) {
       // 使用 cssText 覆盖所有背景样式
       body.style.setProperty('background-color', 'transparent', 'important')
-      // body 已透明，画布取与默认背景渐变同色系的兜底色
       root.style.backgroundColor = dark ? '#1a1a2e' : '#f5f7fa'
     }
     else {
@@ -142,7 +142,7 @@ watch(
       body.style.removeProperty('background-color')
       // 设置正确的背景色
       body.style.backgroundColor = dark ? 'rgb(16, 16, 20)' : '#fff'
-      // 画布与页面底色保持一致，避免过度滚动时露出异色
+      // 画布与页面底色保持一致
       root.style.backgroundColor = dark ? 'rgb(16, 16, 20)' : '#fff'
     }
   },
