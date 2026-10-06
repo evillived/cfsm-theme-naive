@@ -31,6 +31,23 @@ html.dark {
   background-color: #1a1a2e;
 }
 
+/**
+ * 启用自定义背景时，必须让 body 真正透明（移动端与桌面端同理）
+ *
+ * 背景层（components/Background.vue）是 `position: fixed; z-index: -1`，按绘制顺序位于 body 的
+ * 背景之下 —— body 一旦有不透明背景，整层背景（渐变 / 遮罩 / 毛玻璃赖以取样的底图）都会被盖住，
+ * 表现为「背景遮罩透明度」「卡片模糊半径」等设置完全不生效。
+ *
+ * 为什么不能只在 Provider 里写内联样式：Naive 的 NGlobalStyle 会用 IDL 赋值
+ * （`style.backgroundColor = bodyColor`）写 body 内联样式，而按 CSSOM 规范 setProperty 在
+ * priority 为空时会**清除该属性的 !important 标记**，于是内联的 transparent !important 会被它
+ * 覆盖成不透明色。样式表里的 !important 在级联中高于内联 normal，因此这里用「样式表 + !important」
+ * 才能稳定压住 NGlobalStyle（标记由 Provider 按 backgroundEnabled 切换）。
+ */
+html.custom-background body {
+  background-color: transparent !important;
+}
+
 // 上一版（本日首次修复）为「抑制过度滚动」加的两条规则已按约定注释回退：
 // 本次现象源于浏览器收起地址栏带来的视口变化，属于正常滚动而非过度滚动，这两条与它无关，
 // 且会连带禁用浏览器原生下拉刷新（需求外）。若确实需要抑制过度滚动，取消注释即可。
@@ -48,8 +65,11 @@ html.dark {
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, white 16%, transparent),
     0 8px 24px color-mix(in srgb, black 10%, transparent);
-  backdrop-filter: blur(var(--glass-blur-radius, 12px)) saturate(1.18);
+  // 顺序不能反：构建期的 CSS 压缩器把 `-webkit-backdrop-filter` 与 `backdrop-filter` 视为同一
+  // 属性、只保留最后一条；标准属性若写在前面会被删掉，只留下 Chromium 已不再支持的前缀属性
+  // （实测 Chrome/Edge 上 backdrop-filter 计算值为 none），毛玻璃会彻底失效。
   -webkit-backdrop-filter: blur(var(--glass-blur-radius, 12px)) saturate(1.18);
+  backdrop-filter: blur(var(--glass-blur-radius, 12px)) saturate(1.18);
 }
 
 html.dark .glass-surface-enabled {

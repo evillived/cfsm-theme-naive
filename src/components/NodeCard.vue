@@ -568,8 +568,8 @@ function handleCardKeydown(event: KeyboardEvent): void {
   justify-content: center;
   border-radius: var(--n-border-radius);
   background: color-mix(in srgb, var(--n-color) 72%, transparent);
-  backdrop-filter: blur(10px) saturate(0.72);
   -webkit-backdrop-filter: blur(10px) saturate(0.72);
+  backdrop-filter: blur(10px) saturate(0.72);
 }
 
 .offline-mask__status {

@@ -1,0 +1,19 @@
+fix: 修复启用自定义背景后遮罩与毛玻璃失效
+
+上一版给 html 加兜底背景后，body 的背景不再传播到画布、改为自绘，于是 body 的
+不透明背景把 z-index:-1 的背景层（渐变 / 遮罩 / 毛玻璃取样底图）整层盖住 ——
+表现为「背景遮罩透明度」「卡片模糊半径」等设置完全不生效。
+
+排查证据（无头 Chrome 真实渲染 + CSSOM 探针）：
+- 814ms 时 Provider 已正确执行 setProperty('background-color','transparent','important')
+- 随后 Naive 的 NGlobalStyle 用 IDL 赋值（style.backgroundColor = bodyColor）写 body
+  内联样式，按 CSSOM 规范这会清除该属性的 !important 标记 → body 变回不透明白色
+- 样式表 !important 在级联中高于内联 normal，实测可稳定压住（对照用例计算结果 rgba(0,0,0,0)）
+
+改动：
+- styles/main.scss：新增 html.custom-background body { background-color: transparent !important }
+- Provider.vue：按 backgroundEnabled 切换 html 上的 custom-background 标记
+  （内联那份保留，仅作样式表生效前的首帧兜底）
+- main.scss / NodeCard.vue / NodeList.vue：把 -webkit-backdrop-filter 与 backdrop-filter 换序
+  构建期压缩器视二者为同一属性、只保留最后一条，标准属性写在前面会被删掉；实测 Chromium
+  已不再支持 -webkit-backdrop-filter 别名（计算值 none），导致毛玻璃彻底失效

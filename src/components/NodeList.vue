@@ -749,8 +749,8 @@ const columnTitles: Record<string, string> = {
   align-self: stretch;
   height: 100%;
   background-color: color-mix(in srgb, var(--n-color) 76%, transparent);
-  backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
 }
 
 .node-offline-overlay__region,

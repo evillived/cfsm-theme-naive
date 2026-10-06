@@ -122,7 +122,7 @@ watch(
   { immediate: true },
 )
 
-// 当启用背景时，设置 body 背景透明，并给根元素一层兜底色
+// 当启用背景时，给根元素打标记 + 设置兜底色
 watch(
   [() => appStore.backgroundEnabled, isDark],
   ([enabled, dark]) => {
@@ -132,8 +132,12 @@ watch(
     // 重布局，以及过度滚动拉出边界时，露出的都是这层画布背景 —— 取与背景同色系的颜色，
     // 避免闪出刺眼的白色（主修复见 Background.vue 的 100lvh、styles/main.scss）
     const root = document.documentElement
+    // body 的透明必须靠样式表 `html.custom-background body { … !important }` 兜住：
+    // Naive 的 NGlobalStyle 会用 IDL 赋值写 body 内联样式，按 CSSOM 规范会清掉该属性的
+    // !important 标记，因此内联写法压不住它，只有样式表 !important 在级联中高于内联 normal。
+    root.classList.toggle('custom-background', enabled)
     if (enabled) {
-      // 使用 cssText 覆盖所有背景样式
+      // 内联这一份只保证首帧（样式表生效前）不留异色，权威声明在样式表里
       body.style.setProperty('background-color', 'transparent', 'important')
       root.style.backgroundColor = dark ? '#1a1a2e' : '#f5f7fa'
     }
